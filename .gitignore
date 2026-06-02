@@ -2,7 +2,7 @@
 # Rust
 # =========================
 
-/target/
+contract/target/
 Cargo.lock
 
 # Rustfmt backups
