@@ -64,12 +64,28 @@ impl Contract {
         self.max_buy_in = max_buy_in;
     }
 
+    pub fn pause(&mut self) {
+        self.assert_owner();
+
+        self.paused = true;
+    }
+
+    pub fn unpause(&mut self) {
+        self.assert_owner();
+
+        self.paused = false;
+    }
+
     fn assert_owner(&self) {
         assert_eq!(
             env::predecessor_account_id(),
             self.owner_id,
             "Only owner can call this method"
         );
+    }
+
+    fn assert_not_paused(&self) {
+        assert!(!self.paused, "Contract is paused");
     }
 }
 
@@ -149,5 +165,89 @@ mod tests {
         set_context(owner.clone());
 
         Contract::new(owner, ONE_NEAR * 10, ONE_NEAR);
+    }
+
+    #[test]
+    fn owner_can_pause() {
+        let owner = account("owner.testnet");
+
+        set_context(owner.clone());
+
+        let mut contract = Contract::new(owner.clone(), ONE_NEAR, ONE_NEAR * 10);
+
+        set_context(owner);
+
+        contract.pause();
+
+        assert_eq!(contract.is_paused(), true);
+    }
+
+    #[test]
+    fn owner_can_unpause() {
+        let owner = account("owner.testnet");
+
+        set_context(owner.clone());
+
+        let mut contract = Contract::new(owner.clone(), ONE_NEAR, ONE_NEAR * 10);
+
+        set_context(owner.clone());
+
+        contract.pause();
+        assert_eq!(contract.is_paused(), true);
+
+        set_context(owner);
+
+        contract.unpause();
+
+        assert_eq!(contract.is_paused(), false);
+    }
+
+    #[test]
+    #[should_panic(expected = "Only owner can call this method")]
+    fn non_owner_cannot_pause() {
+        let owner = account("owner.testnet");
+        let alice = account("alice.testnet");
+
+        set_context(owner.clone());
+
+        let mut contract = Contract::new(owner, ONE_NEAR, ONE_NEAR * 10);
+
+        set_context(alice);
+
+        contract.pause();
+    }
+
+    #[test]
+    #[should_panic(expected = "Only owner can call this method")]
+    fn non_owner_cannot_unpause() {
+        let owner = account("owner.testnet");
+        let alice = account("alice.testnet");
+
+        set_context(owner.clone());
+
+        let mut contract = Contract::new(owner.clone(), ONE_NEAR, ONE_NEAR * 10);
+
+        set_context(owner);
+
+        contract.pause();
+
+        set_context(alice);
+
+        contract.unpause();
+    }
+
+    #[test]
+    #[should_panic(expected = "Contract is paused")]
+    fn assert_not_paused_fails_when_paused() {
+        let owner = account("owner.testnet");
+
+        set_context(owner.clone());
+
+        let mut contract = Contract::new(owner.clone(), ONE_NEAR, ONE_NEAR * 10);
+
+        set_context(owner);
+
+        contract.pause();
+        contract.assert_not_paused();
     }
 }
