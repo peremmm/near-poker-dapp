@@ -2,6 +2,7 @@ use near_sdk::{
     borsh, env, near, AccountId, BorshStorageKey, NearToken, PanicOnDefault, Promise,
 };
 use near_sdk::store::UnorderedMap;
+use std::collections::HashSet;
 
 const TABLE_STORAGE_OVERHEAD_BYTES: u64 = 256;
 const MAX_PLAYERS: usize = 2;
@@ -29,6 +30,47 @@ pub enum TableStatus {
     Cancelled,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[near(serializers = [borsh, json])]
+pub enum Suit {
+    Clubs,
+    Diamonds,
+    Hearts,
+    Spades,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[near(serializers = [borsh, json])]
+pub enum Rank {
+    Two,
+    Three,
+    Four,
+    Five,
+    Six,
+    Seven,
+    Eight,
+    Nine,
+    Ten,
+    Jack,
+    Queen,
+    King,
+    Ace,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[near(serializers = [borsh, json])]
+pub struct Card {
+    pub rank: Rank,
+    pub suit: Suit,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[near(serializers = [borsh, json])]
+pub struct PlayerCards {
+    pub player_id: AccountId,
+    pub cards: Vec<Card>,
+}
+
 #[derive(Clone)]
 #[near(serializers = [borsh])]
 pub struct Table {
@@ -41,6 +83,9 @@ pub struct Table {
     pub order_locked: bool,
     pub current_turn_index: Option<u8>,
     pub started_at: Option<u64>,
+    pub deck: Vec<Card>,
+    pub player_cards: Vec<PlayerCards>,
+    pub community_cards: Vec<Card>,
 }
 
 #[near(serializers = [json])]
@@ -54,6 +99,9 @@ pub struct TableView {
     pub order_locked: bool,
     pub current_turn_index: Option<u8>,
     pub started_at: Option<u64>,
+    pub player_cards: Vec<PlayerCards>,
+    pub community_cards: Vec<Card>,
+    pub remaining_deck_count: usize,
 }
 
 #[near(contract_state)]
@@ -158,6 +206,9 @@ impl Contract {
             order_locked: false,
             current_turn_index: None,
             started_at: None,
+            deck: Vec::new(),
+            player_cards: Vec::new(),
+            community_cards: Vec::new(),
         };
 
         let estimated_table_bytes =
@@ -230,10 +281,7 @@ impl Contract {
         table.players.push(joiner_id.clone());
 
         if table.players.len() == MAX_PLAYERS {
-            table.status = TableStatus::Active;
-            table.order_locked = true;
-            table.current_turn_index = Some(0);
-            table.started_at = Some(env::block_timestamp());
+            self.start_game(&mut table);
         }
 
         let estimated_table_bytes =
@@ -278,7 +326,111 @@ impl Contract {
             order_locked: table.order_locked,
             current_turn_index: table.current_turn_index,
             started_at: table.started_at,
+            player_cards: table.player_cards.clone(),
+            community_cards: table.community_cards.clone(),
+            remaining_deck_count: table.deck.len(),
         })
+    }
+
+    fn start_game(&self, table: &mut Table) {
+        assert_eq!(
+            table.status,
+            TableStatus::WaitingForPlayers,
+            "Table is not waiting for players"
+        );
+
+        assert_eq!(
+            table.players.len(),
+            MAX_PLAYERS,
+            "Not enough players to start game"
+        );
+
+        let mut deck = Self::build_deck();
+        Self::shuffle_deck(&mut deck);
+
+        let mut player_cards = Vec::new();
+
+        for player_id in table.players.iter() {
+            let first_card = deck.pop().expect("Deck should contain enough cards");
+            let second_card = deck.pop().expect("Deck should contain enough cards");
+
+            player_cards.push(PlayerCards {
+                player_id: player_id.clone(),
+                cards: vec![first_card, second_card],
+            });
+        }
+
+        table.status = TableStatus::Active;
+        table.order_locked = true;
+        table.current_turn_index = Some(0);
+        table.started_at = Some(env::block_timestamp());
+        table.deck = deck;
+        table.player_cards = player_cards;
+        table.community_cards = Vec::new();
+    }
+
+    fn build_deck() -> Vec<Card> {
+        let suits = vec![
+            Suit::Clubs,
+            Suit::Diamonds,
+            Suit::Hearts,
+            Suit::Spades,
+        ];
+
+        let ranks = vec![
+            Rank::Two,
+            Rank::Three,
+            Rank::Four,
+            Rank::Five,
+            Rank::Six,
+            Rank::Seven,
+            Rank::Eight,
+            Rank::Nine,
+            Rank::Ten,
+            Rank::Jack,
+            Rank::Queen,
+            Rank::King,
+            Rank::Ace,
+        ];
+
+        let mut deck = Vec::new();
+
+        for suit in suits {
+            for rank in ranks.iter() {
+                deck.push(Card {
+                    rank: rank.clone(),
+                    suit: suit.clone(),
+                });
+            }
+        }
+
+        deck
+    }
+
+    fn shuffle_deck(deck: &mut Vec<Card>) {
+        let seed = env::random_seed();
+        let seed_bytes: &[u8] = seed.as_ref();
+
+        let mut state = env::block_timestamp();
+
+        for byte in seed_bytes.iter() {
+            state = state
+                .wrapping_mul(31)
+                .wrapping_add(u64::from(*byte));
+        }
+
+        for i in (1..deck.len()).rev() {
+            let seed_byte = u64::from(seed_bytes[i % seed_bytes.len()]);
+
+            state = state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407)
+                .wrapping_add(seed_byte);
+
+            let j = (state as usize) % (i + 1);
+
+            deck.swap(i, j);
+        }
     }
 
     fn assert_owner(&self) {
@@ -832,5 +984,113 @@ mod tests {
         set_context_with_deposit(carol, ONE_NEAR * 3);
 
         contract.join_table(table_id);
+    }
+
+    #[test]
+    fn start_game_deals_two_cards_to_each_player() {
+        let owner = account("owner.testnet");
+        let alice = account("alice.testnet");
+        let bob = account("bob.testnet");
+
+        set_context(owner.clone());
+
+        let mut contract = Contract::new(owner, ONE_NEAR, ONE_NEAR * 10);
+
+        set_context_with_deposit(alice.clone(), ONE_NEAR);
+
+        let table_id = contract.create_table(ONE_NEAR * 2);
+
+        set_context_with_deposit(bob.clone(), ONE_NEAR * 3);
+
+        contract.join_table(table_id);
+
+        let table = contract.get_table(table_id).unwrap();
+
+        assert_eq!(table.player_cards.len(), 2);
+
+        for hand in table.player_cards.iter() {
+            assert_eq!(hand.cards.len(), 2);
+        }
+
+        assert_eq!(table.player_cards[0].player_id, alice);
+        assert_eq!(table.player_cards[1].player_id, bob);
+    }
+
+    #[test]
+    fn dealt_cards_are_unique() {
+        let owner = account("owner.testnet");
+        let alice = account("alice.testnet");
+        let bob = account("bob.testnet");
+
+        set_context(owner.clone());
+
+        let mut contract = Contract::new(owner, ONE_NEAR, ONE_NEAR * 10);
+
+        set_context_with_deposit(alice, ONE_NEAR);
+
+        let table_id = contract.create_table(ONE_NEAR * 2);
+
+        set_context_with_deposit(bob, ONE_NEAR * 3);
+
+        contract.join_table(table_id);
+
+        let table = contract.get_table(table_id).unwrap();
+
+        let mut seen_cards = HashSet::new();
+
+        for hand in table.player_cards.iter() {
+            for card in hand.cards.iter() {
+                assert!(
+                    seen_cards.insert(card.clone()),
+                    "Duplicate card was dealt"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn deck_has_correct_remaining_card_count() {
+        let owner = account("owner.testnet");
+        let alice = account("alice.testnet");
+        let bob = account("bob.testnet");
+
+        set_context(owner.clone());
+
+        let mut contract = Contract::new(owner, ONE_NEAR, ONE_NEAR * 10);
+
+        set_context_with_deposit(alice, ONE_NEAR);
+
+        let table_id = contract.create_table(ONE_NEAR * 2);
+
+        set_context_with_deposit(bob, ONE_NEAR * 3);
+
+        contract.join_table(table_id);
+
+        let table = contract.get_table(table_id).unwrap();
+
+        assert_eq!(table.remaining_deck_count, 48);
+    }
+
+    #[test]
+    fn community_cards_start_empty() {
+        let owner = account("owner.testnet");
+        let alice = account("alice.testnet");
+        let bob = account("bob.testnet");
+
+        set_context(owner.clone());
+
+        let mut contract = Contract::new(owner, ONE_NEAR, ONE_NEAR * 10);
+
+        set_context_with_deposit(alice, ONE_NEAR);
+
+        let table_id = contract.create_table(ONE_NEAR * 2);
+
+        set_context_with_deposit(bob, ONE_NEAR * 3);
+
+        contract.join_table(table_id);
+
+        let table = contract.get_table(table_id).unwrap();
+
+        assert_eq!(table.community_cards.len(), 0);
     }
 }
