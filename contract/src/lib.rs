@@ -38,6 +38,9 @@ pub struct Table {
     pub players: Vec<AccountId>,
     pub status: TableStatus,
     pub created_at: u64,
+    pub order_locked: bool,
+    pub current_turn_index: Option<u8>,
+    pub started_at: Option<u64>,
 }
 
 #[near(serializers = [json])]
@@ -48,6 +51,9 @@ pub struct TableView {
     pub players: Vec<AccountId>,
     pub status: TableStatus,
     pub created_at: u64,
+    pub order_locked: bool,
+    pub current_turn_index: Option<u8>,
+    pub started_at: Option<u64>,
 }
 
 #[near(contract_state)]
@@ -149,6 +155,9 @@ impl Contract {
             players: vec![creator_id.clone()],
             status: TableStatus::WaitingForPlayers,
             created_at: env::block_timestamp(),
+            order_locked: false,
+            current_turn_index: None,
+            started_at: None,
         };
 
         let estimated_table_bytes =
@@ -222,6 +231,9 @@ impl Contract {
 
         if table.players.len() == MAX_PLAYERS {
             table.status = TableStatus::Active;
+            table.order_locked = true;
+            table.current_turn_index = Some(0);
+            table.started_at = Some(env::block_timestamp());
         }
 
         let estimated_table_bytes =
@@ -263,6 +275,9 @@ impl Contract {
             players: table.players.clone(),
             status: table.status.clone(),
             created_at: table.created_at,
+            order_locked: table.order_locked,
+            current_turn_index: table.current_turn_index,
+            started_at: table.started_at,
         })
     }
 
@@ -730,6 +745,91 @@ mod tests {
         contract.pause();
 
         set_context_with_deposit(bob, ONE_NEAR * 3);
+
+        contract.join_table(table_id);
+    }
+
+    #[test]
+    fn game_starts_and_locks_order_when_second_player_joins() {
+        let owner = account("owner.testnet");
+        let alice = account("alice.testnet");
+        let bob = account("bob.testnet");
+
+        set_context(owner.clone());
+
+        let mut contract = Contract::new(owner, ONE_NEAR, ONE_NEAR * 10);
+
+        set_context_with_deposit(alice.clone(), ONE_NEAR);
+
+        let table_id = contract.create_table(ONE_NEAR * 2);
+
+        let table_before_join = contract.get_table(table_id).unwrap();
+
+        assert_eq!(table_before_join.status, TableStatus::WaitingForPlayers);
+        assert_eq!(table_before_join.order_locked, false);
+        assert_eq!(table_before_join.current_turn_index, None);
+        assert_eq!(table_before_join.started_at, None);
+
+        set_context_with_deposit(bob.clone(), ONE_NEAR * 3);
+
+        contract.join_table(table_id);
+
+        let table_after_join = contract.get_table(table_id).unwrap();
+
+        assert_eq!(table_after_join.players, vec![alice, bob]);
+        assert_eq!(table_after_join.status, TableStatus::Active);
+        assert_eq!(table_after_join.order_locked, true);
+        assert_eq!(table_after_join.current_turn_index, Some(0));
+        assert!(table_after_join.started_at.is_some());
+    }
+
+    #[test]
+    fn current_turn_is_first_player_after_start() {
+        let owner = account("owner.testnet");
+        let alice = account("alice.testnet");
+        let bob = account("bob.testnet");
+
+        set_context(owner.clone());
+
+        let mut contract = Contract::new(owner, ONE_NEAR, ONE_NEAR * 10);
+
+        set_context_with_deposit(alice.clone(), ONE_NEAR);
+
+        let table_id = contract.create_table(ONE_NEAR * 2);
+
+        set_context_with_deposit(bob, ONE_NEAR * 3);
+
+        contract.join_table(table_id);
+
+        let table = contract.get_table(table_id).unwrap();
+
+        let current_turn_index = table.current_turn_index.unwrap() as usize;
+        let current_player = table.players[current_turn_index].clone();
+
+        assert_eq!(current_player, alice);
+    }
+
+    #[test]
+    #[should_panic(expected = "Table is not waiting for players")]
+    fn new_players_cannot_join_after_game_starts() {
+        let owner = account("owner.testnet");
+        let alice = account("alice.testnet");
+        let bob = account("bob.testnet");
+        let carol = account("carol.testnet");
+
+        set_context(owner.clone());
+
+        let mut contract = Contract::new(owner, ONE_NEAR, ONE_NEAR * 10);
+
+        set_context_with_deposit(alice, ONE_NEAR);
+
+        let table_id = contract.create_table(ONE_NEAR * 2);
+
+        set_context_with_deposit(bob, ONE_NEAR * 3);
+
+        contract.join_table(table_id);
+
+        set_context_with_deposit(carol, ONE_NEAR * 3);
 
         contract.join_table(table_id);
     }
