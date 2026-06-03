@@ -1,11 +1,47 @@
-use near_sdk::{env, near, AccountId, PanicOnDefault};
+use near_sdk::{env, near, AccountId, BorshStorageKey, PanicOnDefault};
+use near_sdk::store::UnorderedMap;
 
 pub type Balance = u128;
+
+#[derive(BorshStorageKey)]
+#[near(serializers = [borsh])]
+pub enum StorageKey {
+    Tables,
+}
 
 #[near(serializers = [json])]
 pub struct BuyInRangeView {
     pub min_buy_in: Balance,
     pub max_buy_in: Balance,
+}
+
+#[derive(Clone, PartialEq, Eq, Debug)]
+#[near(serializers = [borsh, json])]
+pub enum TableStatus {
+    WaitingForPlayers,
+    Active,
+    Finished,
+    Cancelled,
+}
+
+#[near(serializers = [borsh])]
+pub struct Table {
+    pub id: u64,
+    pub creator_id: AccountId,
+    pub buy_in: Balance,
+    pub players: Vec<AccountId>,
+    pub status: TableStatus,
+    pub created_at: u64,
+}
+
+#[near(serializers = [json])]
+pub struct TableView {
+    pub id: u64,
+    pub creator_id: AccountId,
+    pub buy_in: Balance,
+    pub players: Vec<AccountId>,
+    pub status: TableStatus,
+    pub created_at: u64,
 }
 
 #[near(contract_state)]
@@ -15,6 +51,8 @@ pub struct Contract {
     min_buy_in: Balance,
     max_buy_in: Balance,
     paused: bool,
+    tables: UnorderedMap<u64, Table>,
+    next_table_id: u64,
 }
 
 #[near]
@@ -33,6 +71,8 @@ impl Contract {
             min_buy_in,
             max_buy_in,
             paused: false,
+            tables: UnorderedMap::new(StorageKey::Tables),
+            next_table_id: 0,
         }
     }
 
@@ -76,6 +116,54 @@ impl Contract {
         self.paused = false;
     }
 
+    #[payable]
+    pub fn create_table(&mut self, buy_in: Balance) -> u64 {
+        self.assert_not_paused();
+
+        assert!(
+            buy_in >= self.min_buy_in,
+            "Buy-in is below the minimum allowed"
+        );
+
+        assert!(
+            buy_in <= self.max_buy_in,
+            "Buy-in is above the maximum allowed"
+        );
+
+        assert!(
+            env::attached_deposit().as_yoctonear() > 0,
+            "Attach deposit to cover storage"
+        );
+
+        let creator_id = env::predecessor_account_id();
+        let table_id = self.next_table_id;
+
+        let table = Table {
+            id: table_id,
+            creator_id: creator_id.clone(),
+            buy_in,
+            players: vec![creator_id],
+            status: TableStatus::WaitingForPlayers,
+            created_at: env::block_timestamp(),
+        };
+
+        self.tables.insert(table_id, table);
+        self.next_table_id += 1;
+
+        table_id
+    }
+
+    pub fn get_table(&self, table_id: u64) -> Option<TableView> {
+        self.tables.get(&table_id).map(|table| TableView {
+            id: table.id,
+            creator_id: table.creator_id.clone(),
+            buy_in: table.buy_in,
+            players: table.players.clone(),
+            status: table.status.clone(),
+            created_at: table.created_at,
+        })
+    }
+
     fn assert_owner(&self) {
         assert_eq!(
             env::predecessor_account_id(),
@@ -104,6 +192,15 @@ mod tests {
     fn set_context(predecessor: AccountId) {
         let context = VMContextBuilder::new()
             .predecessor_account_id(predecessor)
+            .build();
+
+        testing_env!(context);
+    }
+
+    fn set_context_with_deposit(predecessor: AccountId, deposit: Balance) {
+        let context = VMContextBuilder::new()
+            .predecessor_account_id(predecessor)
+            .attached_deposit(near_sdk::NearToken::from_yoctonear(deposit))
             .build();
 
         testing_env!(context);
@@ -249,5 +346,93 @@ mod tests {
 
         contract.pause();
         contract.assert_not_paused();
+    }
+
+    #[test]
+    fn create_table_with_valid_buy_in_succeeds() {
+        let owner = account("owner.testnet");
+        let alice = account("alice.testnet");
+
+        set_context(owner.clone());
+
+        let mut contract = Contract::new(owner, ONE_NEAR, ONE_NEAR * 10);
+
+        set_context_with_deposit(alice.clone(), ONE_NEAR);
+
+        let table_id = contract.create_table(ONE_NEAR * 2);
+
+        assert_eq!(table_id, 0);
+
+        let table = contract.get_table(table_id).unwrap();
+
+        assert_eq!(table.id, 0);
+        assert_eq!(table.creator_id, alice.clone());
+        assert_eq!(table.buy_in, ONE_NEAR * 2);
+        assert_eq!(table.players, vec![alice]);
+        assert_eq!(table.status, TableStatus::WaitingForPlayers);
+    }
+
+    #[test]
+    #[should_panic(expected = "Buy-in is below the minimum allowed")]
+    fn create_table_with_invalid_low_buy_in_fails() {
+        let owner = account("owner.testnet");
+        let alice = account("alice.testnet");
+
+        set_context(owner.clone());
+
+        let mut contract = Contract::new(owner, ONE_NEAR, ONE_NEAR * 10);
+
+        set_context_with_deposit(alice, ONE_NEAR);
+
+        contract.create_table(ONE_NEAR / 2);
+    }
+
+    #[test]
+    #[should_panic(expected = "Buy-in is above the maximum allowed")]
+    fn create_table_with_invalid_high_buy_in_fails() {
+        let owner = account("owner.testnet");
+        let alice = account("alice.testnet");
+
+        set_context(owner.clone());
+
+        let mut contract = Contract::new(owner, ONE_NEAR, ONE_NEAR * 10);
+
+        set_context_with_deposit(alice, ONE_NEAR);
+
+        contract.create_table(ONE_NEAR * 20);
+    }
+
+    #[test]
+    #[should_panic(expected = "Attach deposit to cover storage")]
+    fn create_table_without_deposit_fails() {
+        let owner = account("owner.testnet");
+        let alice = account("alice.testnet");
+
+        set_context(owner.clone());
+
+        let mut contract = Contract::new(owner, ONE_NEAR, ONE_NEAR * 10);
+
+        set_context(alice);
+
+        contract.create_table(ONE_NEAR * 2);
+    }
+
+    #[test]
+    #[should_panic(expected = "Contract is paused")]
+    fn create_table_fails_when_paused() {
+        let owner = account("owner.testnet");
+        let alice = account("alice.testnet");
+
+        set_context(owner.clone());
+
+        let mut contract = Contract::new(owner.clone(), ONE_NEAR, ONE_NEAR * 10);
+
+        set_context(owner);
+
+        contract.pause();
+
+        set_context_with_deposit(alice, ONE_NEAR);
+
+        contract.create_table(ONE_NEAR * 2);
     }
 }
