@@ -4,6 +4,7 @@ use near_sdk::{
 use near_sdk::store::UnorderedMap;
 
 const TABLE_STORAGE_OVERHEAD_BYTES: u64 = 256;
+const MAX_PLAYERS: usize = 2;
 
 pub type Balance = u128;
 
@@ -28,6 +29,7 @@ pub enum TableStatus {
     Cancelled,
 }
 
+#[derive(Clone)]
 #[near(serializers = [borsh])]
 pub struct Table {
     pub id: u64,
@@ -180,6 +182,79 @@ impl Contract {
         table_id
     }
 
+    #[payable]
+    pub fn join_table(&mut self, table_id: u64) {
+        self.assert_not_paused();
+
+        let attached_deposit = env::attached_deposit().as_yoctonear();
+        let joiner_id = env::predecessor_account_id();
+
+        let mut table = self
+            .tables
+            .get(&table_id)
+            .expect("Table does not exist")
+            .clone();
+
+        assert_eq!(
+            table.status,
+            TableStatus::WaitingForPlayers,
+            "Table is not waiting for players"
+        );
+
+        assert!(
+            !table.players.contains(&joiner_id),
+            "Player already joined this table"
+        );
+
+        assert!(
+            table.players.len() < MAX_PLAYERS,
+            "Table is already full"
+        );
+
+        assert!(
+            attached_deposit > table.buy_in,
+            "Attach buy-in plus storage deposit"
+        );
+
+        let initial_storage = env::storage_usage();
+
+        table.players.push(joiner_id.clone());
+
+        if table.players.len() == MAX_PLAYERS {
+            table.status = TableStatus::Active;
+        }
+
+        let estimated_table_bytes =
+            borsh::to_vec(&table).expect("Failed to serialize table").len() as u64
+                + TABLE_STORAGE_OVERHEAD_BYTES;
+
+        let estimated_storage_cost =
+            Balance::from(estimated_table_bytes) * env::storage_byte_cost().as_yoctonear();
+
+        self.tables.insert(table_id, table);
+
+        let final_storage = env::storage_usage();
+        let storage_used = final_storage.saturating_sub(initial_storage);
+
+        let measured_storage_cost =
+            Balance::from(storage_used) * env::storage_byte_cost().as_yoctonear();
+
+        let storage_cost = measured_storage_cost.max(estimated_storage_cost);
+
+        let required_deposit = table_buy_in_plus_storage(table_id, self, storage_cost);
+
+        assert!(
+            attached_deposit >= required_deposit,
+            "Insufficient deposit for buy-in and storage"
+        );
+
+        let refund = attached_deposit - required_deposit;
+
+        if refund > 0 {
+            Promise::new(joiner_id).transfer(NearToken::from_yoctonear(refund));
+        }
+    }
+
     pub fn get_table(&self, table_id: u64) -> Option<TableView> {
         self.tables.get(&table_id).map(|table| TableView {
             id: table.id,
@@ -202,6 +277,19 @@ impl Contract {
     fn assert_not_paused(&self) {
         assert!(!self.paused, "Contract is paused");
     }
+}
+
+fn table_buy_in_plus_storage(
+    table_id: u64,
+    contract: &Contract,
+    storage_cost: Balance,
+) -> Balance {
+    let table = contract
+        .tables
+        .get(&table_id)
+        .expect("Table does not exist");
+
+    table.buy_in + storage_cost
 }
 
 #[cfg(test)]
@@ -497,5 +585,152 @@ mod tests {
         assert_eq!(table.creator_id, alice.clone());
         assert_eq!(table.players, vec![alice]);
         assert_eq!(table.status, TableStatus::WaitingForPlayers);
+    }
+
+    #[test]
+    fn join_table_succeeds_for_second_player() {
+        let owner = account("owner.testnet");
+        let alice = account("alice.testnet");
+        let bob = account("bob.testnet");
+
+        set_context(owner.clone());
+
+        let mut contract = Contract::new(owner, ONE_NEAR, ONE_NEAR * 10);
+
+        set_context_with_deposit(alice.clone(), ONE_NEAR);
+
+        let table_id = contract.create_table(ONE_NEAR * 2);
+
+        set_context_with_deposit(bob.clone(), ONE_NEAR * 3);
+
+        contract.join_table(table_id);
+
+        let table = contract.get_table(table_id).unwrap();
+
+        assert_eq!(table.players, vec![alice, bob]);
+        assert_eq!(table.status, TableStatus::Active);
+    }
+
+    #[test]
+    #[should_panic(expected = "Player already joined this table")]
+    fn same_player_cannot_join_twice() {
+        let owner = account("owner.testnet");
+        let alice = account("alice.testnet");
+
+        set_context(owner.clone());
+
+        let mut contract = Contract::new(owner, ONE_NEAR, ONE_NEAR * 10);
+
+        set_context_with_deposit(alice.clone(), ONE_NEAR);
+
+        let table_id = contract.create_table(ONE_NEAR * 2);
+
+        set_context_with_deposit(alice, ONE_NEAR * 3);
+
+        contract.join_table(table_id);
+    }
+
+    #[test]
+    #[should_panic(expected = "Table does not exist")]
+    fn cannot_join_nonexistent_table() {
+        let owner = account("owner.testnet");
+        let bob = account("bob.testnet");
+
+        set_context(owner.clone());
+
+        let mut contract = Contract::new(owner, ONE_NEAR, ONE_NEAR * 10);
+
+        set_context_with_deposit(bob, ONE_NEAR * 3);
+
+        contract.join_table(999);
+    }
+
+    #[test]
+    #[should_panic(expected = "Table is not waiting for players")]
+    fn cannot_join_active_table() {
+        let owner = account("owner.testnet");
+        let alice = account("alice.testnet");
+        let bob = account("bob.testnet");
+        let carol = account("carol.testnet");
+
+        set_context(owner.clone());
+
+        let mut contract = Contract::new(owner, ONE_NEAR, ONE_NEAR * 10);
+
+        set_context_with_deposit(alice, ONE_NEAR);
+
+        let table_id = contract.create_table(ONE_NEAR * 2);
+
+        set_context_with_deposit(bob, ONE_NEAR * 3);
+
+        contract.join_table(table_id);
+
+        set_context_with_deposit(carol, ONE_NEAR * 3);
+
+        contract.join_table(table_id);
+    }
+
+    #[test]
+    #[should_panic(expected = "Attach buy-in plus storage deposit")]
+    fn join_table_with_only_buy_in_fails() {
+        let owner = account("owner.testnet");
+        let alice = account("alice.testnet");
+        let bob = account("bob.testnet");
+
+        set_context(owner.clone());
+
+        let mut contract = Contract::new(owner, ONE_NEAR, ONE_NEAR * 10);
+
+        set_context_with_deposit(alice, ONE_NEAR);
+
+        let table_id = contract.create_table(ONE_NEAR * 2);
+
+        set_context_with_deposit(bob, ONE_NEAR * 2);
+
+        contract.join_table(table_id);
+    }
+
+    #[test]
+    #[should_panic(expected = "Insufficient deposit for buy-in and storage")]
+    fn join_table_with_insufficient_storage_deposit_fails() {
+        let owner = account("owner.testnet");
+        let alice = account("alice.testnet");
+        let bob = account("bob.testnet");
+
+        set_context(owner.clone());
+
+        let mut contract = Contract::new(owner, ONE_NEAR, ONE_NEAR * 10);
+
+        set_context_with_deposit(alice, ONE_NEAR);
+
+        let table_id = contract.create_table(ONE_NEAR * 2);
+
+        set_context_with_deposit(bob, ONE_NEAR * 2 + 1);
+
+        contract.join_table(table_id);
+    }
+
+    #[test]
+    #[should_panic(expected = "Contract is paused")]
+    fn join_table_fails_when_paused() {
+        let owner = account("owner.testnet");
+        let alice = account("alice.testnet");
+        let bob = account("bob.testnet");
+
+        set_context(owner.clone());
+
+        let mut contract = Contract::new(owner.clone(), ONE_NEAR, ONE_NEAR * 10);
+
+        set_context_with_deposit(alice, ONE_NEAR);
+
+        let table_id = contract.create_table(ONE_NEAR * 2);
+
+        set_context(owner);
+
+        contract.pause();
+
+        set_context_with_deposit(bob, ONE_NEAR * 3);
+
+        contract.join_table(table_id);
     }
 }
