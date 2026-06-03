@@ -71,6 +71,23 @@ pub struct PlayerCards {
     pub cards: Vec<Card>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[near(serializers = [borsh, json])]
+pub enum PlayerAction {
+    Check,
+    Call,
+    Raise { amount: Balance },
+    Fold,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[near(serializers = [borsh, json])]
+pub struct ActionRecord {
+    pub player_id: AccountId,
+    pub action: PlayerAction,
+    pub timestamp: u64,
+}
+
 #[derive(Clone)]
 #[near(serializers = [borsh])]
 pub struct Table {
@@ -86,6 +103,7 @@ pub struct Table {
     pub deck: Vec<Card>,
     pub player_cards: Vec<PlayerCards>,
     pub community_cards: Vec<Card>,
+    pub action_history: Vec<ActionRecord>,
 }
 
 #[near(serializers = [json])]
@@ -102,6 +120,7 @@ pub struct TableView {
     pub player_cards: Vec<PlayerCards>,
     pub community_cards: Vec<Card>,
     pub remaining_deck_count: usize,
+    pub action_history: Vec<ActionRecord>,
 }
 
 #[near(contract_state)]
@@ -209,6 +228,7 @@ impl Contract {
             deck: Vec::new(),
             player_cards: Vec::new(),
             community_cards: Vec::new(),
+            action_history: Vec::new(),
         };
 
         let estimated_table_bytes =
@@ -315,6 +335,55 @@ impl Contract {
         }
     }
 
+    pub fn submit_action(&mut self, table_id: u64, action: PlayerAction) {
+        self.assert_not_paused();
+
+        let actor_id = env::predecessor_account_id();
+
+        let mut table = self
+            .tables
+            .get(&table_id)
+            .expect("Table does not exist")
+            .clone();
+
+        assert_eq!(
+            table.status,
+            TableStatus::Active,
+            "Table is not active"
+        );
+
+        assert!(
+            table.players.contains(&actor_id),
+            "Only table players can submit actions"
+        );
+
+        let current_turn_index = table
+            .current_turn_index
+            .expect("Current turn is not set") as usize;
+
+        let current_player = table
+            .players
+            .get(current_turn_index)
+            .expect("Current turn player does not exist");
+
+        assert_eq!(
+            current_player,
+            &actor_id,
+            "Only the current player can act"
+        );
+
+        table.action_history.push(ActionRecord {
+            player_id: actor_id,
+            action,
+            timestamp: env::block_timestamp(),
+        });
+
+        table.current_turn_index =
+            Some(((current_turn_index + 1) % table.players.len()) as u8);
+
+        self.tables.insert(table_id, table);
+    }
+
     pub fn get_table(&self, table_id: u64) -> Option<TableView> {
         self.tables.get(&table_id).map(|table| TableView {
             id: table.id,
@@ -329,6 +398,7 @@ impl Contract {
             player_cards: table.player_cards.clone(),
             community_cards: table.community_cards.clone(),
             remaining_deck_count: table.deck.len(),
+            action_history: table.action_history.clone(),
         })
     }
 
@@ -1092,5 +1162,113 @@ mod tests {
         let table = contract.get_table(table_id).unwrap();
 
         assert_eq!(table.community_cards.len(), 0);
+    }
+
+    fn setup_active_table() -> (Contract, u64, AccountId, AccountId) {
+        let owner = account("owner.testnet");
+        let alice = account("alice.testnet");
+        let bob = account("bob.testnet");
+
+        set_context(owner.clone());
+
+        let mut contract = Contract::new(owner, ONE_NEAR, ONE_NEAR * 10);
+
+        set_context_with_deposit(alice.clone(), ONE_NEAR);
+
+        let table_id = contract.create_table(ONE_NEAR * 2);
+
+        set_context_with_deposit(bob.clone(), ONE_NEAR * 3);
+
+        contract.join_table(table_id);
+
+        (contract, table_id, alice, bob)
+    }
+
+    #[test]
+    fn current_player_can_submit_action() {
+        let (mut contract, table_id, alice, _) = setup_active_table();
+
+        set_context(alice.clone());
+
+        contract.submit_action(table_id, PlayerAction::Check);
+
+        let table = contract.get_table(table_id).unwrap();
+
+        assert_eq!(table.action_history.len(), 1);
+        assert_eq!(table.action_history[0].player_id, alice);
+        assert_eq!(table.action_history[0].action, PlayerAction::Check);
+    }
+
+    #[test]
+    #[should_panic(expected = "Only the current player can act")]
+    fn wrong_player_cannot_act() {
+        let (mut contract, table_id, _, bob) = setup_active_table();
+
+        set_context(bob);
+
+        contract.submit_action(table_id, PlayerAction::Check);
+    }
+
+    #[test]
+    #[should_panic(expected = "Only table players can submit actions")]
+    fn non_player_cannot_act() {
+        let (mut contract, table_id, _, _) = setup_active_table();
+        let carol = account("carol.testnet");
+
+        set_context(carol);
+
+        contract.submit_action(table_id, PlayerAction::Check);
+    }
+
+    #[test]
+    fn action_moves_turn_to_next_player() {
+        let (mut contract, table_id, alice, bob) = setup_active_table();
+
+        set_context(alice);
+
+        contract.submit_action(table_id, PlayerAction::Check);
+
+        let table = contract.get_table(table_id).unwrap();
+
+        assert_eq!(table.current_turn_index, Some(1));
+
+        let current_player = table.players[table.current_turn_index.unwrap() as usize].clone();
+
+        assert_eq!(current_player, bob);
+    }
+
+    #[test]
+    #[should_panic(expected = "Table is not active")]
+    fn cannot_submit_action_on_waiting_table() {
+        let owner = account("owner.testnet");
+        let alice = account("alice.testnet");
+
+        set_context(owner.clone());
+
+        let mut contract = Contract::new(owner, ONE_NEAR, ONE_NEAR * 10);
+
+        set_context_with_deposit(alice.clone(), ONE_NEAR);
+
+        let table_id = contract.create_table(ONE_NEAR * 2);
+
+        set_context(alice);
+
+        contract.submit_action(table_id, PlayerAction::Check);
+    }
+
+    #[test]
+    #[should_panic(expected = "Contract is paused")]
+    fn cannot_submit_action_when_paused() {
+        let (mut contract, table_id, alice, _) = setup_active_table();
+
+        let owner = contract.get_owner();
+
+        set_context(owner);
+
+        contract.pause();
+
+        set_context(alice);
+
+        contract.submit_action(table_id, PlayerAction::Check);
     }
 }
