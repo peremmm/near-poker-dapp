@@ -1,5 +1,9 @@
-use near_sdk::{env, near, AccountId, BorshStorageKey, PanicOnDefault};
+use near_sdk::{
+    borsh, env, near, AccountId, BorshStorageKey, NearToken, PanicOnDefault, Promise,
+};
 use near_sdk::store::UnorderedMap;
+
+const TABLE_STORAGE_OVERHEAD_BYTES: u64 = 256;
 
 pub type Balance = u128;
 
@@ -130,10 +134,8 @@ impl Contract {
             "Buy-in is above the maximum allowed"
         );
 
-        assert!(
-            env::attached_deposit().as_yoctonear() > 0,
-            "Attach deposit to cover storage"
-        );
+        let attached_deposit = env::attached_deposit().as_yoctonear();
+        let initial_storage = env::storage_usage();
 
         let creator_id = env::predecessor_account_id();
         let table_id = self.next_table_id;
@@ -142,13 +144,38 @@ impl Contract {
             id: table_id,
             creator_id: creator_id.clone(),
             buy_in,
-            players: vec![creator_id],
+            players: vec![creator_id.clone()],
             status: TableStatus::WaitingForPlayers,
             created_at: env::block_timestamp(),
         };
 
+        let estimated_table_bytes =
+            borsh::to_vec(&table).expect("Failed to serialize table").len() as u64
+                + TABLE_STORAGE_OVERHEAD_BYTES;
+
+        let estimated_storage_cost =
+            Balance::from(estimated_table_bytes) * env::storage_byte_cost().as_yoctonear();
+
         self.tables.insert(table_id, table);
         self.next_table_id += 1;
+
+        let final_storage = env::storage_usage();
+        let storage_used = final_storage.saturating_sub(initial_storage);
+        let measured_storage_cost =
+            Balance::from(storage_used) * env::storage_byte_cost().as_yoctonear();
+
+        let storage_cost = measured_storage_cost.max(estimated_storage_cost);
+
+        assert!(
+            attached_deposit >= storage_cost,
+            "Insufficient deposit to cover storage"
+        );
+
+        let refund = attached_deposit - storage_cost;
+
+        if refund > 0 {
+            Promise::new(creator_id).transfer(NearToken::from_yoctonear(refund));
+        }
 
         table_id
     }
@@ -403,7 +430,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "Attach deposit to cover storage")]
+    #[should_panic(expected = "Insufficient deposit to cover storage")]
     fn create_table_without_deposit_fails() {
         let owner = account("owner.testnet");
         let alice = account("alice.testnet");
@@ -434,5 +461,41 @@ mod tests {
         set_context_with_deposit(alice, ONE_NEAR);
 
         contract.create_table(ONE_NEAR * 2);
+    }
+
+    #[test]
+    #[should_panic(expected = "Insufficient deposit to cover storage")]
+    fn create_table_with_insufficient_storage_deposit_fails() {
+        let owner = account("owner.testnet");
+        let alice = account("alice.testnet");
+
+        set_context(owner.clone());
+
+        let mut contract = Contract::new(owner, ONE_NEAR, ONE_NEAR * 10);
+
+        set_context_with_deposit(alice, 1);
+
+        contract.create_table(ONE_NEAR * 2);
+    }
+
+    #[test]
+    fn create_table_with_excess_storage_deposit_succeeds() {
+        let owner = account("owner.testnet");
+        let alice = account("alice.testnet");
+
+        set_context(owner.clone());
+
+        let mut contract = Contract::new(owner, ONE_NEAR, ONE_NEAR * 10);
+
+        set_context_with_deposit(alice.clone(), ONE_NEAR);
+
+        let table_id = contract.create_table(ONE_NEAR * 2);
+
+        let table = contract.get_table(table_id).unwrap();
+
+        assert_eq!(table.id, table_id);
+        assert_eq!(table.creator_id, alice.clone());
+        assert_eq!(table.players, vec![alice]);
+        assert_eq!(table.status, TableStatus::WaitingForPlayers);
     }
 }
