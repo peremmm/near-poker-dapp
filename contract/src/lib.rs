@@ -73,6 +73,13 @@ pub struct PlayerCards {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[near(serializers = [borsh, json])]
+pub struct PlayerBalance {
+    pub player_id: AccountId,
+    pub balance: Balance,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[near(serializers = [borsh, json])]
 pub enum PlayerAction {
     Check,
     Call,
@@ -104,6 +111,8 @@ pub struct Table {
     pub player_cards: Vec<PlayerCards>,
     pub community_cards: Vec<Card>,
     pub action_history: Vec<ActionRecord>,
+    pub pot: Balance,
+    pub player_balances: Vec<PlayerBalance>,
 }
 
 #[near(serializers = [json])]
@@ -121,6 +130,8 @@ pub struct TableView {
     pub community_cards: Vec<Card>,
     pub remaining_deck_count: usize,
     pub action_history: Vec<ActionRecord>,
+    pub pot: Balance,
+    pub player_balances: Vec<PlayerBalance>,
 }
 
 #[near(contract_state)]
@@ -229,6 +240,8 @@ impl Contract {
             player_cards: Vec::new(),
             community_cards: Vec::new(),
             action_history: Vec::new(),
+            pot: 0,
+            player_balances: Vec::new(),
         };
 
         let estimated_table_bytes =
@@ -372,6 +385,27 @@ impl Contract {
             "Only the current player can act"
         );
 
+        match &action {
+            PlayerAction::Raise { amount } => {
+                assert!(*amount > 0, "Raise amount must be greater than zero");
+
+                let player_balance = table
+                    .player_balances
+                    .iter_mut()
+                    .find(|balance| balance.player_id == actor_id)
+                    .expect("Player balance does not exist");
+
+                assert!(
+                    player_balance.balance >= *amount,
+                    "Raise amount exceeds player balance"
+                );
+
+                player_balance.balance -= *amount;
+                table.pot += *amount;
+            }
+            PlayerAction::Check | PlayerAction::Call | PlayerAction::Fold => {}
+        }
+
         table.action_history.push(ActionRecord {
             player_id: actor_id,
             action,
@@ -399,6 +433,8 @@ impl Contract {
             community_cards: table.community_cards.clone(),
             remaining_deck_count: table.deck.len(),
             action_history: table.action_history.clone(),
+            pot: table.pot,
+            player_balances: table.player_balances.clone(),
         })
     }
 
@@ -419,6 +455,7 @@ impl Contract {
         Self::shuffle_deck(&mut deck);
 
         let mut player_cards = Vec::new();
+        let mut player_balances = Vec::new();
 
         for player_id in table.players.iter() {
             let first_card = deck.pop().expect("Deck should contain enough cards");
@@ -427,6 +464,11 @@ impl Contract {
             player_cards.push(PlayerCards {
                 player_id: player_id.clone(),
                 cards: vec![first_card, second_card],
+            });
+
+            player_balances.push(PlayerBalance {
+                player_id: player_id.clone(),
+                balance: table.buy_in,
             });
         }
 
@@ -437,6 +479,8 @@ impl Contract {
         table.deck = deck;
         table.player_cards = player_cards;
         table.community_cards = Vec::new();
+        table.pot = 0;
+        table.player_balances = player_balances;
     }
 
     fn build_deck() -> Vec<Card> {
@@ -1270,5 +1314,118 @@ mod tests {
         set_context(alice);
 
         contract.submit_action(table_id, PlayerAction::Check);
+    }
+
+    fn get_player_balance(table: &TableView, player_id: &AccountId) -> Balance {
+        table
+            .player_balances
+            .iter()
+            .find(|balance| &balance.player_id == player_id)
+            .expect("Player balance should exist")
+            .balance
+    }
+
+    #[test]
+    fn game_starts_with_player_internal_balances() {
+        let (contract, table_id, alice, bob) = setup_active_table();
+
+        let table = contract.get_table(table_id).unwrap();
+
+        assert_eq!(table.player_balances.len(), 2);
+        assert_eq!(get_player_balance(&table, &alice), ONE_NEAR * 2);
+        assert_eq!(get_player_balance(&table, &bob), ONE_NEAR * 2);
+    }
+
+    #[test]
+    fn game_starts_with_zero_pot() {
+        let (contract, table_id, _, _) = setup_active_table();
+
+        let table = contract.get_table(table_id).unwrap();
+
+        assert_eq!(table.pot, 0);
+    }
+
+    #[test]
+    fn raise_decreases_current_player_balance() {
+        let (mut contract, table_id, alice, _) = setup_active_table();
+
+        set_context(alice.clone());
+
+        contract.submit_action(
+            table_id,
+            PlayerAction::Raise {
+                amount: ONE_NEAR / 2,
+            },
+        );
+
+        let table = contract.get_table(table_id).unwrap();
+
+        assert_eq!(
+            get_player_balance(&table, &alice),
+            ONE_NEAR * 2 - ONE_NEAR / 2
+        );
+    }
+
+    #[test]
+    fn raise_increases_pot() {
+        let (mut contract, table_id, alice, _) = setup_active_table();
+
+        set_context(alice);
+
+        contract.submit_action(
+            table_id,
+            PlayerAction::Raise {
+                amount: ONE_NEAR / 2,
+            },
+        );
+
+        let table = contract.get_table(table_id).unwrap();
+
+        assert_eq!(table.pot, ONE_NEAR / 2);
+    }
+
+    #[test]
+    #[should_panic(expected = "Raise amount exceeds player balance")]
+    fn raise_larger_than_balance_fails() {
+        let (mut contract, table_id, alice, _) = setup_active_table();
+
+        set_context(alice);
+
+        contract.submit_action(
+            table_id,
+            PlayerAction::Raise {
+                amount: ONE_NEAR * 3,
+            },
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "Raise amount must be greater than zero")]
+    fn raise_zero_fails() {
+        let (mut contract, table_id, alice, _) = setup_active_table();
+
+        set_context(alice);
+
+        contract.submit_action(
+            table_id,
+            PlayerAction::Raise {
+                amount: 0,
+            },
+        );
+    }
+
+    #[test]
+    fn check_does_not_change_balance_or_pot() {
+        let (mut contract, table_id, alice, bob) = setup_active_table();
+
+        set_context(alice.clone());
+
+        contract.submit_action(table_id, PlayerAction::Check);
+
+        let table = contract.get_table(table_id).unwrap();
+
+        assert_eq!(table.pot, 0);
+        assert_eq!(get_player_balance(&table, &alice), ONE_NEAR * 2);
+        assert_eq!(get_player_balance(&table, &bob), ONE_NEAR * 2);
     }
 }
