@@ -95,6 +95,14 @@ pub struct ActionRecord {
     pub timestamp: u64,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[near(serializers = [borsh, json])]
+pub struct RoundResult {
+    pub winner_id: AccountId,
+    pub pot_awarded: Balance,
+    pub resolved_at: u64,
+}
+
 #[derive(Clone)]
 #[near(serializers = [borsh])]
 pub struct Table {
@@ -113,6 +121,7 @@ pub struct Table {
     pub action_history: Vec<ActionRecord>,
     pub pot: Balance,
     pub player_balances: Vec<PlayerBalance>,
+    pub round_result: Option<RoundResult>,
 }
 
 #[near(serializers = [json])]
@@ -132,6 +141,7 @@ pub struct TableView {
     pub action_history: Vec<ActionRecord>,
     pub pot: Balance,
     pub player_balances: Vec<PlayerBalance>,
+    pub round_result: Option<RoundResult>,
 }
 
 #[near(contract_state)]
@@ -242,6 +252,7 @@ impl Contract {
             action_history: Vec::new(),
             pot: 0,
             player_balances: Vec::new(),
+            round_result: None,
         };
 
         let estimated_table_bytes =
@@ -418,6 +429,59 @@ impl Contract {
         self.tables.insert(table_id, table);
     }
 
+    pub fn resolve_round(&mut self, table_id: u64, winner_id: AccountId) {
+        self.assert_not_paused();
+        self.assert_owner();
+
+        let mut table = self
+            .tables
+            .get(&table_id)
+            .expect("Table does not exist")
+            .clone();
+
+        assert_eq!(
+            table.status,
+            TableStatus::Active,
+            "Table is not active"
+        );
+
+        assert!(
+            table.players.contains(&winner_id),
+            "Winner must be a table player"
+        );
+
+        assert!(
+            table.round_result.is_none(),
+            "Round already resolved"
+        );
+
+        assert!(
+            table.pot > 0,
+            "Cannot resolve round with empty pot"
+        );
+
+        let pot_awarded = table.pot;
+
+        let winner_balance = table
+            .player_balances
+            .iter_mut()
+            .find(|balance| balance.player_id == winner_id)
+            .expect("Winner balance does not exist");
+
+        winner_balance.balance += pot_awarded;
+
+        table.pot = 0;
+        table.status = TableStatus::Finished;
+        table.current_turn_index = None;
+        table.round_result = Some(RoundResult {
+            winner_id,
+            pot_awarded,
+            resolved_at: env::block_timestamp(),
+        });
+
+        self.tables.insert(table_id, table);
+    }
+
     pub fn get_table(&self, table_id: u64) -> Option<TableView> {
         self.tables.get(&table_id).map(|table| TableView {
             id: table.id,
@@ -435,6 +499,7 @@ impl Contract {
             action_history: table.action_history.clone(),
             pot: table.pot,
             player_balances: table.player_balances.clone(),
+            round_result: table.round_result.clone(),
         })
     }
 
@@ -1427,5 +1492,161 @@ mod tests {
         assert_eq!(table.pot, 0);
         assert_eq!(get_player_balance(&table, &alice), ONE_NEAR * 2);
         assert_eq!(get_player_balance(&table, &bob), ONE_NEAR * 2);
+    }
+
+    #[test]
+    fn owner_can_resolve_round() {
+        let (mut contract, table_id, alice, _) = setup_active_table();
+        let owner = contract.get_owner();
+
+        set_context(alice.clone());
+
+        contract.submit_action(
+            table_id,
+            PlayerAction::Raise {
+                amount: ONE_NEAR / 2,
+            },
+        );
+
+        set_context(owner);
+
+        contract.resolve_round(table_id, alice.clone());
+
+        let table = contract.get_table(table_id).unwrap();
+
+        assert_eq!(table.status, TableStatus::Finished);
+        assert!(table.round_result.is_some());
+        assert_eq!(table.round_result.unwrap().winner_id, alice);
+    }
+
+    #[test]
+    #[should_panic(expected = "Only owner can call this method")]
+    fn non_owner_cannot_resolve_round() {
+        let (mut contract, table_id, alice, bob) = setup_active_table();
+
+        set_context(alice.clone());
+
+        contract.submit_action(
+            table_id,
+            PlayerAction::Raise {
+                amount: ONE_NEAR / 2,
+            },
+        );
+
+        set_context(bob);
+
+        contract.resolve_round(table_id, alice);
+    }
+
+    #[test]
+    fn winner_balance_increases_by_pot() {
+        let (mut contract, table_id, alice, _) = setup_active_table();
+        let owner = contract.get_owner();
+
+        set_context(alice.clone());
+
+        contract.submit_action(
+            table_id,
+            PlayerAction::Raise {
+                amount: ONE_NEAR / 2,
+            },
+        );
+
+        let before_resolution = contract.get_table(table_id).unwrap();
+
+        assert_eq!(
+            get_player_balance(&before_resolution, &alice),
+            ONE_NEAR * 2 - ONE_NEAR / 2
+        );
+
+        set_context(owner);
+
+        contract.resolve_round(table_id, alice.clone());
+
+        let after_resolution = contract.get_table(table_id).unwrap();
+
+        assert_eq!(
+            get_player_balance(&after_resolution, &alice),
+            ONE_NEAR * 2
+        );
+    }
+
+    #[test]
+    fn pot_resets_after_resolution() {
+        let (mut contract, table_id, alice, _) = setup_active_table();
+        let owner = contract.get_owner();
+
+        set_context(alice.clone());
+
+        contract.submit_action(
+            table_id,
+            PlayerAction::Raise {
+                amount: ONE_NEAR / 2,
+            },
+        );
+
+        set_context(owner);
+
+        contract.resolve_round(table_id, alice);
+
+        let table = contract.get_table(table_id).unwrap();
+
+        assert_eq!(table.pot, 0);
+    }
+
+    #[test]
+    #[should_panic(expected = "Winner must be a table player")]
+    fn cannot_resolve_with_non_player_winner() {
+        let (mut contract, table_id, alice, _) = setup_active_table();
+        let owner = contract.get_owner();
+        let carol = account("carol.testnet");
+
+        set_context(alice);
+
+        contract.submit_action(
+            table_id,
+            PlayerAction::Raise {
+                amount: ONE_NEAR / 2,
+            },
+        );
+
+        set_context(owner);
+
+        contract.resolve_round(table_id, carol);
+    }
+
+    #[test]
+    #[should_panic(expected = "Cannot resolve round with empty pot")]
+    fn cannot_resolve_with_empty_pot() {
+        let (mut contract, table_id, alice, _) = setup_active_table();
+        let owner = contract.get_owner();
+
+        set_context(owner);
+
+        contract.resolve_round(table_id, alice);
+    }
+
+    #[test]
+    #[should_panic(expected = "Table is not active")]
+    fn cannot_resolve_round_twice() {
+        let (mut contract, table_id, alice, _) = setup_active_table();
+        let owner = contract.get_owner();
+
+        set_context(alice.clone());
+
+        contract.submit_action(
+            table_id,
+            PlayerAction::Raise {
+                amount: ONE_NEAR / 2,
+            },
+        );
+
+        set_context(owner.clone());
+
+        contract.resolve_round(table_id, alice.clone());
+
+        set_context(owner);
+
+        contract.resolve_round(table_id, alice);
     }
 }
