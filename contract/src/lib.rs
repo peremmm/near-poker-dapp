@@ -1,18 +1,31 @@
 use near_sdk::{
-    borsh, env, near, AccountId, BorshStorageKey, NearToken, PanicOnDefault, Promise,
+    borsh, env, ext_contract, near, AccountId, BorshStorageKey, Gas, NearToken,
+    PanicOnDefault, Promise, PromiseResult,
 };
 use near_sdk::store::UnorderedMap;
 use std::collections::HashSet;
 
 const TABLE_STORAGE_OVERHEAD_BYTES: u64 = 256;
 const MAX_PLAYERS: usize = 2;
+const WITHDRAW_CALLBACK_GAS: Gas = Gas::from_tgas(10);
 
 pub type Balance = u128;
+
+#[ext_contract(ext_self)]
+trait ExtSelf {
+    fn on_withdraw_complete(
+        &mut self,
+        player_id: AccountId,
+        table_id: u64,
+        amount: Balance,
+    ) -> bool;
+}
 
 #[derive(BorshStorageKey)]
 #[near(serializers = [borsh])]
 pub enum StorageKey {
     Tables,
+    PendingWithdrawals,
 }
 
 #[near(serializers = [json])]
@@ -103,6 +116,15 @@ pub struct RoundResult {
     pub resolved_at: u64,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[near(serializers = [borsh, json])]
+pub struct PendingWithdrawal {
+    pub table_id: u64,
+    pub player_id: AccountId,
+    pub amount: Balance,
+    pub requested_at: u64,
+}
+
 #[derive(Clone)]
 #[near(serializers = [borsh])]
 pub struct Table {
@@ -153,6 +175,7 @@ pub struct Contract {
     paused: bool,
     tables: UnorderedMap<u64, Table>,
     next_table_id: u64,
+    pending_withdrawals: UnorderedMap<AccountId, PendingWithdrawal>,
 }
 
 #[near]
@@ -173,6 +196,7 @@ impl Contract {
             paused: false,
             tables: UnorderedMap::new(StorageKey::Tables),
             next_table_id: 0,
+            pending_withdrawals: UnorderedMap::new(StorageKey::PendingWithdrawals),
         }
     }
 
@@ -482,6 +506,121 @@ impl Contract {
         self.tables.insert(table_id, table);
     }
 
+    pub fn withdraw(&mut self, table_id: u64) -> Promise {
+        self.assert_not_paused();
+
+        let player_id = env::predecessor_account_id();
+
+        assert!(
+            self.pending_withdrawals.get(&player_id).is_none(),
+            "Player already has a pending withdrawal"
+        );
+
+        let mut table = self
+            .tables
+            .get(&table_id)
+            .expect("Table does not exist")
+            .clone();
+
+        assert_eq!(
+            table.status,
+            TableStatus::Finished,
+            "Withdrawals are only allowed after the table is finished"
+        );
+
+        assert!(
+            table.players.contains(&player_id),
+            "Only table players can withdraw"
+        );
+
+        let player_balance = table
+            .player_balances
+            .iter_mut()
+            .find(|balance| balance.player_id == player_id)
+            .expect("Player balance does not exist");
+
+        let amount = player_balance.balance;
+
+        assert!(amount > 0, "No balance available to withdraw");
+
+        player_balance.balance = 0;
+
+        self.tables.insert(table_id, table);
+
+        self.pending_withdrawals.insert(
+            player_id.clone(),
+            PendingWithdrawal {
+                table_id,
+                player_id: player_id.clone(),
+                amount,
+                requested_at: env::block_timestamp(),
+            },
+        );
+
+        Promise::new(player_id.clone())
+            .transfer(NearToken::from_yoctonear(amount))
+            .then(
+                ext_self::ext(env::current_account_id())
+                    .with_static_gas(WITHDRAW_CALLBACK_GAS)
+                    .on_withdraw_complete(player_id, table_id, amount),
+            )
+    }
+
+    #[private]
+    pub fn on_withdraw_complete(
+        &mut self,
+        player_id: AccountId,
+        table_id: u64,
+        amount: Balance,
+    ) -> bool {
+        let pending = self
+            .pending_withdrawals
+            .get(&player_id)
+            .expect("Pending withdrawal does not exist")
+            .clone();
+
+        assert_eq!(
+            pending.table_id, table_id,
+            "Pending withdrawal table mismatch"
+        );
+
+        assert_eq!(
+            pending.amount, amount,
+            "Pending withdrawal amount mismatch"
+        );
+
+        match env::promise_result(0) {
+            PromiseResult::Successful(_) => {
+                self.pending_withdrawals.remove(&player_id);
+                true
+            }
+            PromiseResult::Failed => {
+                let mut table = self
+                    .tables
+                    .get(&table_id)
+                    .expect("Table does not exist")
+                    .clone();
+
+                let player_balance = table
+                    .player_balances
+                    .iter_mut()
+                    .find(|balance| balance.player_id == player_id)
+                    .expect("Player balance does not exist");
+
+                player_balance.balance += amount;
+
+                self.tables.insert(table_id, table);
+                self.pending_withdrawals.remove(&player_id);
+
+                false
+            }
+        }
+    }
+
+    pub fn get_pending_withdrawal(&self, player_id: AccountId) -> Option<PendingWithdrawal> {
+        self.pending_withdrawals.get(&player_id).cloned()
+    }
+
     pub fn get_table(&self, table_id: u64) -> Option<TableView> {
         self.tables.get(&table_id).map(|table| TableView {
             id: table.id,
@@ -641,7 +780,7 @@ fn table_buy_in_plus_storage(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use near_sdk::test_utils::VMContextBuilder;
+    use near_sdk::test_utils::{testing_env_with_promise_results, VMContextBuilder};
     use near_sdk::testing_env;
 
     const ONE_NEAR: Balance = 1_000_000_000_000_000_000_000_000;
@@ -1648,5 +1787,169 @@ mod tests {
         set_context(owner);
 
         contract.resolve_round(table_id, alice);
+    }
+
+    fn contract_account() -> AccountId {
+        account("contract.testnet")
+    }
+
+    fn set_callback_context_with_result(result: PromiseResult) {
+        let current = contract_account();
+
+        let context = VMContextBuilder::new()
+            .current_account_id(current.clone())
+            .predecessor_account_id(current)
+            .build();
+
+        testing_env_with_promise_results(context, result);
+    }
+
+    fn setup_finished_table_with_pot() -> (Contract, u64, AccountId, AccountId) {
+        let (mut contract, table_id, alice, bob) = setup_active_table();
+        let owner = contract.get_owner();
+
+        set_context(alice.clone());
+
+        contract.submit_action(
+            table_id,
+            PlayerAction::Raise {
+                amount: ONE_NEAR / 2,
+            },
+        );
+
+        set_context(owner);
+
+        contract.resolve_round(table_id, alice.clone());
+
+        (contract, table_id, alice, bob)
+    }
+
+    #[test]
+    fn player_can_withdraw_after_finished_round() {
+        let (mut contract, table_id, alice, _) = setup_finished_table_with_pot();
+
+        set_context(alice.clone());
+
+        contract.withdraw(table_id);
+
+        let pending = contract.get_pending_withdrawal(alice.clone()).unwrap();
+
+        assert_eq!(pending.table_id, table_id);
+        assert_eq!(pending.player_id, alice);
+        assert!(pending.amount > 0);
+    }
+
+    #[test]
+    fn withdraw_deducts_internal_balance_before_transfer() {
+        let (mut contract, table_id, alice, _) = setup_finished_table_with_pot();
+
+        set_context(alice.clone());
+
+        contract.withdraw(table_id);
+
+        let table = contract.get_table(table_id).unwrap();
+
+        assert_eq!(get_player_balance(&table, &alice), 0);
+    }
+
+    #[test]
+    #[should_panic(expected = "Withdrawals are only allowed after the table is finished")]
+    fn cannot_withdraw_from_active_table() {
+        let (mut contract, table_id, alice, _) = setup_active_table();
+
+        set_context(alice);
+
+        contract.withdraw(table_id);
+    }
+
+    #[test]
+    #[should_panic(expected = "No balance available to withdraw")]
+    fn cannot_withdraw_zero_balance() {
+        let (mut contract, table_id, alice, _) = setup_finished_table_with_pot();
+
+        set_context(alice.clone());
+
+        contract.withdraw(table_id);
+
+        let pending = contract.get_pending_withdrawal(alice.clone()).unwrap();
+
+        set_callback_context_with_result(PromiseResult::Successful(Vec::new()));
+
+        contract.on_withdraw_complete(
+            pending.player_id.clone(),
+            pending.table_id,
+            pending.amount,
+        );
+
+        set_context(alice);
+
+        contract.withdraw(table_id);
+    }
+
+    #[test]
+    #[should_panic(expected = "Only table players can withdraw")]
+    fn non_player_cannot_withdraw() {
+        let (mut contract, table_id, _, _) = setup_finished_table_with_pot();
+        let carol = account("carol.testnet");
+
+        set_context(carol);
+
+        contract.withdraw(table_id);
+    }
+
+    #[test]
+    fn withdraw_callback_success_clears_pending_withdrawal() {
+        let (mut contract, table_id, alice, _) = setup_finished_table_with_pot();
+
+        set_context(alice.clone());
+
+        contract.withdraw(table_id);
+
+        let pending = contract.get_pending_withdrawal(alice.clone()).unwrap();
+
+        set_callback_context_with_result(PromiseResult::Successful(Vec::new()));
+
+        let success = contract.on_withdraw_complete(
+            pending.player_id.clone(),
+            pending.table_id,
+            pending.amount,
+        );
+
+        assert_eq!(success, true);
+        assert!(contract.get_pending_withdrawal(alice).is_none());
+    }
+
+    #[test]
+    fn withdraw_callback_failure_restores_balance() {
+        let (mut contract, table_id, alice, _) = setup_finished_table_with_pot();
+
+        set_context(alice.clone());
+
+        contract.withdraw(table_id);
+
+        let pending = contract.get_pending_withdrawal(alice.clone()).unwrap();
+
+        let table_after_withdraw = contract.get_table(table_id).unwrap();
+
+        assert_eq!(get_player_balance(&table_after_withdraw, &alice), 0);
+
+        set_callback_context_with_result(PromiseResult::Failed);
+
+        let success = contract.on_withdraw_complete(
+            pending.player_id.clone(),
+            pending.table_id,
+            pending.amount,
+        );
+
+        assert_eq!(success, false);
+
+        let table_after_callback = contract.get_table(table_id).unwrap();
+
+        assert_eq!(
+            get_player_balance(&table_after_callback, &alice),
+            pending.amount
+        );
+
+        assert!(contract.get_pending_withdrawal(alice).is_none());
     }
 }
