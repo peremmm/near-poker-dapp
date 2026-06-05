@@ -78,3 +78,44 @@ hr {
   background: #ffe8e8;
   color: #8a0000;
 }
+
+.form-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 16px;
+}
+
+.form-card {
+  padding: 18px;
+  border: 1px solid #ddd;
+  border-radius: 14px;
+  background: #fafafa;
+}
+
+.form-card label {
+  display: grid;
+  gap: 6px;
+  margin-bottom: 12px;
+  font-weight: 600;
+}
+
+select {
+  width: 100%;
+  max-width: 320px;
+  padding: 12px;
+  border: 1px solid #ccc;
+  border-radius: 10px;
+  background: white;
+}
+
+.success {
+  padding: 12px;
+  border-radius: 10px;
+  background: #e8fff0;
+  color: #006b2e;
+}
+
+.hint {
+  font-size: 0.9rem;
+  color: #666;
+}

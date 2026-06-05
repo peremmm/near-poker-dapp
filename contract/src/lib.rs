@@ -99,7 +99,7 @@ pub struct PlayerBalance {
 pub enum PlayerAction {
     Check,
     Call,
-    Raise { amount: Balance },
+    Raise { amount: U128 },
     Fold,
 }
 
@@ -272,7 +272,9 @@ impl Contract {
     }
 
     #[payable]
-    pub fn create_table(&mut self, buy_in: Balance) -> u64 {
+    pub fn create_table(&mut self, buy_in: U128) -> u64 {
+        let buy_in: Balance = buy_in.0;
+
         self.assert_not_paused();
 
         assert!(
@@ -454,7 +456,9 @@ impl Contract {
 
         match &action {
             PlayerAction::Raise { amount } => {
-                assert!(*amount > 0, "Raise amount must be greater than zero");
+                let amount: Balance = amount.0;
+
+                assert!(amount > 0, "Raise amount must be greater than zero");
 
                 let player_balance = table
                     .player_balances
@@ -463,12 +467,12 @@ impl Contract {
                     .expect("Player balance does not exist");
 
                 assert!(
-                    player_balance.balance >= *amount,
+                    player_balance.balance >= amount,
                     "Raise amount exceeds player balance"
                 );
 
-                player_balance.balance -= *amount;
-                table.pot += *amount;
+                player_balance.balance -= amount;
+                table.pot += amount;
             }
             PlayerAction::Check | PlayerAction::Call | PlayerAction::Fold => {}
         }
@@ -1136,7 +1140,7 @@ mod tests {
 
         set_context_with_deposit(alice.clone(), ONE_NEAR);
 
-        let table_id = contract.create_table(ONE_NEAR * 2);
+        let table_id = contract.create_table(U128(ONE_NEAR * 2));
 
         assert_eq!(table_id, 0);
 
@@ -1161,7 +1165,7 @@ mod tests {
 
         set_context_with_deposit(alice, ONE_NEAR);
 
-        contract.create_table(ONE_NEAR / 2);
+        contract.create_table(U128(ONE_NEAR / 2));
     }
 
     #[test]
@@ -1176,7 +1180,7 @@ mod tests {
 
         set_context_with_deposit(alice, ONE_NEAR);
 
-        contract.create_table(ONE_NEAR * 20);
+        contract.create_table(U128(ONE_NEAR * 20));
     }
 
     #[test]
@@ -1191,7 +1195,7 @@ mod tests {
 
         set_context(alice);
 
-        contract.create_table(ONE_NEAR * 2);
+        contract.create_table(U128(ONE_NEAR * 2));
     }
 
     #[test]
@@ -1210,7 +1214,7 @@ mod tests {
 
         set_context_with_deposit(alice, ONE_NEAR);
 
-        contract.create_table(ONE_NEAR * 2);
+        contract.create_table(U128(ONE_NEAR * 2));
     }
 
     #[test]
@@ -1225,7 +1229,7 @@ mod tests {
 
         set_context_with_deposit(alice, 1);
 
-        contract.create_table(ONE_NEAR * 2);
+        contract.create_table(U128(ONE_NEAR * 2));
     }
 
     #[test]
@@ -1239,7 +1243,7 @@ mod tests {
 
         set_context_with_deposit(alice.clone(), ONE_NEAR);
 
-        let table_id = contract.create_table(ONE_NEAR * 2);
+        let table_id = contract.create_table(U128(ONE_NEAR * 2));
 
         let table = contract.get_table(table_id).unwrap();
 
@@ -1261,7 +1265,7 @@ mod tests {
 
         set_context_with_deposit(alice.clone(), ONE_NEAR);
 
-        let table_id = contract.create_table(ONE_NEAR * 2);
+        let table_id = contract.create_table(U128(ONE_NEAR * 2));
 
         set_context_with_deposit(bob.clone(), ONE_NEAR * 3);
 
@@ -1285,7 +1289,7 @@ mod tests {
 
         set_context_with_deposit(alice.clone(), ONE_NEAR);
 
-        let table_id = contract.create_table(ONE_NEAR * 2);
+        let table_id = contract.create_table(U128(ONE_NEAR * 2));
 
         set_context_with_deposit(alice, ONE_NEAR * 3);
 
@@ -1321,7 +1325,7 @@ mod tests {
 
         set_context_with_deposit(alice, ONE_NEAR);
 
-        let table_id = contract.create_table(ONE_NEAR * 2);
+        let table_id = contract.create_table(U128(ONE_NEAR * 2));
 
         set_context_with_deposit(bob, ONE_NEAR * 3);
 
@@ -1345,7 +1349,7 @@ mod tests {
 
         set_context_with_deposit(alice, ONE_NEAR);
 
-        let table_id = contract.create_table(ONE_NEAR * 2);
+        let table_id = contract.create_table(U128(ONE_NEAR * 2));
 
         set_context_with_deposit(bob, ONE_NEAR * 2);
 
@@ -1365,7 +1369,7 @@ mod tests {
 
         set_context_with_deposit(alice, ONE_NEAR);
 
-        let table_id = contract.create_table(ONE_NEAR * 2);
+        let table_id = contract.create_table(U128(ONE_NEAR * 2));
 
         set_context_with_deposit(bob, ONE_NEAR * 2 + 1);
 
@@ -1385,7 +1389,7 @@ mod tests {
 
         set_context_with_deposit(alice, ONE_NEAR);
 
-        let table_id = contract.create_table(ONE_NEAR * 2);
+        let table_id = contract.create_table(U128(ONE_NEAR * 2));
 
         set_context(owner);
 
@@ -1408,7 +1412,7 @@ mod tests {
 
         set_context_with_deposit(alice.clone(), ONE_NEAR);
 
-        let table_id = contract.create_table(ONE_NEAR * 2);
+        let table_id = contract.create_table(U128(ONE_NEAR * 2));
 
         let table_before_join = contract.get_table(table_id).unwrap();
 
@@ -1442,7 +1446,7 @@ mod tests {
 
         set_context_with_deposit(alice.clone(), ONE_NEAR);
 
-        let table_id = contract.create_table(ONE_NEAR * 2);
+        let table_id = contract.create_table(U128(ONE_NEAR * 2));
 
         set_context_with_deposit(bob, ONE_NEAR * 3);
 
@@ -1470,7 +1474,7 @@ mod tests {
 
         set_context_with_deposit(alice, ONE_NEAR);
 
-        let table_id = contract.create_table(ONE_NEAR * 2);
+        let table_id = contract.create_table(U128(ONE_NEAR * 2));
 
         set_context_with_deposit(bob, ONE_NEAR * 3);
 
@@ -1493,7 +1497,7 @@ mod tests {
 
         set_context_with_deposit(alice.clone(), ONE_NEAR);
 
-        let table_id = contract.create_table(ONE_NEAR * 2);
+        let table_id = contract.create_table(U128(ONE_NEAR * 2));
 
         set_context_with_deposit(bob.clone(), ONE_NEAR * 3);
 
@@ -1523,7 +1527,7 @@ mod tests {
 
         set_context_with_deposit(alice, ONE_NEAR);
 
-        let table_id = contract.create_table(ONE_NEAR * 2);
+        let table_id = contract.create_table(U128(ONE_NEAR * 2));
 
         set_context_with_deposit(bob, ONE_NEAR * 3);
 
@@ -1555,7 +1559,7 @@ mod tests {
 
         set_context_with_deposit(alice, ONE_NEAR);
 
-        let table_id = contract.create_table(ONE_NEAR * 2);
+        let table_id = contract.create_table(U128(ONE_NEAR * 2));
 
         set_context_with_deposit(bob, ONE_NEAR * 3);
 
@@ -1578,7 +1582,7 @@ mod tests {
 
         set_context_with_deposit(alice, ONE_NEAR);
 
-        let table_id = contract.create_table(ONE_NEAR * 2);
+        let table_id = contract.create_table(U128(ONE_NEAR * 2));
 
         set_context_with_deposit(bob, ONE_NEAR * 3);
 
@@ -1600,7 +1604,7 @@ mod tests {
 
         set_context_with_deposit(alice.clone(), ONE_NEAR);
 
-        let table_id = contract.create_table(ONE_NEAR * 2);
+        let table_id = contract.create_table(U128(ONE_NEAR * 2));
 
         set_context_with_deposit(bob.clone(), ONE_NEAR * 3);
 
@@ -1674,7 +1678,7 @@ mod tests {
 
         set_context_with_deposit(alice.clone(), ONE_NEAR);
 
-        let table_id = contract.create_table(ONE_NEAR * 2);
+        let table_id = contract.create_table(U128(ONE_NEAR * 2));
 
         set_context(alice);
 
@@ -1735,7 +1739,7 @@ mod tests {
         contract.submit_action(
             table_id,
             PlayerAction::Raise {
-                amount: ONE_NEAR / 2,
+                amount: U128(ONE_NEAR / 2),
             },
         );
 
@@ -1756,7 +1760,7 @@ mod tests {
         contract.submit_action(
             table_id,
             PlayerAction::Raise {
-                amount: ONE_NEAR / 2,
+                amount: U128(ONE_NEAR / 2),
             },
         );
 
@@ -1775,7 +1779,7 @@ mod tests {
         contract.submit_action(
             table_id,
             PlayerAction::Raise {
-                amount: ONE_NEAR * 3,
+                amount: U128(ONE_NEAR * 3),
             },
         );
     }
@@ -1790,7 +1794,7 @@ mod tests {
         contract.submit_action(
             table_id,
             PlayerAction::Raise {
-                amount: 0,
+                amount: U128(0),
             },
         );
     }
@@ -1820,7 +1824,7 @@ mod tests {
         contract.submit_action(
             table_id,
             PlayerAction::Raise {
-                amount: ONE_NEAR / 2,
+                amount: U128(ONE_NEAR / 2),
             },
         );
 
@@ -1845,7 +1849,7 @@ mod tests {
         contract.submit_action(
             table_id,
             PlayerAction::Raise {
-                amount: ONE_NEAR / 2,
+                amount: U128(ONE_NEAR / 2),
             },
         );
 
@@ -1864,7 +1868,7 @@ mod tests {
         contract.submit_action(
             table_id,
             PlayerAction::Raise {
-                amount: ONE_NEAR / 2,
+                amount: U128(ONE_NEAR / 2),
             },
         );
 
@@ -1897,7 +1901,7 @@ mod tests {
         contract.submit_action(
             table_id,
             PlayerAction::Raise {
-                amount: ONE_NEAR / 2,
+                amount: U128(ONE_NEAR / 2),
             },
         );
 
@@ -1922,7 +1926,7 @@ mod tests {
         contract.submit_action(
             table_id,
             PlayerAction::Raise {
-                amount: ONE_NEAR / 2,
+                amount: U128(ONE_NEAR / 2),
             },
         );
 
@@ -1953,7 +1957,7 @@ mod tests {
         contract.submit_action(
             table_id,
             PlayerAction::Raise {
-                amount: ONE_NEAR / 2,
+                amount: U128(ONE_NEAR / 2),
             },
         );
 
@@ -1990,7 +1994,7 @@ mod tests {
         contract.submit_action(
             table_id,
             PlayerAction::Raise {
-                amount: ONE_NEAR / 2,
+                amount: U128(ONE_NEAR / 2),
             },
         );
 
@@ -2192,7 +2196,7 @@ mod tests {
         contract.submit_action(
             table_id,
             PlayerAction::Raise {
-                amount: ONE_NEAR,
+                amount: U128(ONE_NEAR),
             },
         );
 
@@ -2255,10 +2259,10 @@ mod tests {
         let mut contract = Contract::new(owner, U128(ONE_NEAR), U128(ONE_NEAR * 10));
 
         set_context_with_deposit(alice.clone(), ONE_NEAR);
-        let waiting_table_id = contract.create_table(ONE_NEAR * 2);
+        let waiting_table_id = contract.create_table(U128(ONE_NEAR * 2));
 
         set_context_with_deposit(bob.clone(), ONE_NEAR);
-        let active_table_id = contract.create_table(ONE_NEAR * 2);
+        let active_table_id = contract.create_table(U128(ONE_NEAR * 2));
 
         set_context_with_deposit(carol, ONE_NEAR * 3);
         contract.join_table(active_table_id);
