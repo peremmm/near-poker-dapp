@@ -2313,4 +2313,138 @@ mod tests {
         assert_eq!(state.community_cards.len(), 0);
         assert_eq!(state.remaining_deck_count, 48);
     }
+
+    #[test]
+    #[should_panic(expected = "Player already has a pending withdrawal")]
+    fn pending_withdrawal_blocks_second_withdraw() {
+        let (mut contract, table_id, alice, _) = setup_finished_table_with_pot();
+
+        set_context(alice.clone());
+        contract.withdraw(table_id);
+        set_context(alice);
+        contract.withdraw(table_id);
+    }
+
+    #[test]
+    #[should_panic(expected = "Pending withdrawal amount mismatch")]
+    fn withdraw_callback_amount_mismatch_fails() {
+        let (mut contract, table_id, alice, _) = setup_finished_table_with_pot();
+
+        set_context(alice.clone());
+        contract.withdraw(table_id);
+        let pending = contract.get_pending_withdrawal(alice).unwrap();
+        set_callback_context_with_result(PromiseResult::Successful(Vec::new()));
+        contract.on_withdraw_complete(
+            pending.player_id,
+            pending.table_id,
+            pending.amount + 1,
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "Pending withdrawal table mismatch")]
+    fn withdraw_callback_table_mismatch_fails() {
+        let (mut contract, table_id, alice, _) = setup_finished_table_with_pot();
+
+        set_context(alice.clone());
+        contract.withdraw(table_id);
+        let pending = contract.get_pending_withdrawal(alice).unwrap();
+        set_callback_context_with_result(PromiseResult::Successful(Vec::new()));
+        contract.on_withdraw_complete(
+            pending.player_id,
+            pending.table_id + 1,
+            pending.amount,
+        );
+    }
+
+    #[test]
+    fn cancelled_table_allows_withdraw() {
+        let (mut contract, table_id, alice, _) = setup_active_table();
+
+        let table = contract.get_table(table_id).unwrap();
+        let last_action_at = table.last_action_at.unwrap();
+
+        set_context_with_timestamp(
+            alice.clone(),
+            last_action_at + ABANDON_TIMEOUT_NS,
+        );
+
+        contract.claim_timeout_refund(table_id);
+
+        set_context(alice.clone());
+
+        contract.withdraw(table_id);
+
+        let pending = contract.get_pending_withdrawal(alice).unwrap();
+
+        assert_eq!(pending.table_id, table_id);
+        assert!(pending.amount > 0);
+    }
+
+    #[test]
+    #[should_panic(expected = "Contract is paused")]
+    fn paused_contract_blocks_timeout_refund() {
+        let (mut contract, table_id, alice, _) = setup_active_table();
+        let owner = contract.get_owner();
+
+        let table = contract.get_table(table_id).unwrap();
+        let last_action_at = table.last_action_at.unwrap();
+
+        set_context(owner);
+
+        contract.pause();
+
+        set_context_with_timestamp(
+            alice,
+            last_action_at + ABANDON_TIMEOUT_NS,
+        );
+
+        contract.claim_timeout_refund(table_id);
+    }
+
+    #[test]
+    #[should_panic(expected = "Contract is paused")]
+    fn paused_contract_blocks_withdraw() {
+        let (mut contract, table_id, alice, _) = setup_finished_table_with_pot();
+        let owner = contract.get_owner();
+
+        set_context(owner);
+
+        contract.pause();
+
+        set_context(alice);
+
+        contract.withdraw(table_id);
+    }
+
+    #[test]
+    fn failed_withdraw_callback_allows_retry() {
+        let (mut contract, table_id, alice, _) = setup_finished_table_with_pot();
+
+        set_context(alice.clone());
+
+        contract.withdraw(table_id);
+
+        let pending = contract.get_pending_withdrawal(alice.clone()).unwrap();
+
+        set_callback_context_with_result(PromiseResult::Failed);
+
+        let success = contract.on_withdraw_complete(
+            pending.player_id.clone(),
+            pending.table_id,
+            pending.amount,
+        );
+
+        assert_eq!(success, false);
+        assert!(contract.get_pending_withdrawal(alice.clone()).is_none());
+
+        set_context(alice.clone());
+
+        contract.withdraw(table_id);
+
+        let retry_pending = contract.get_pending_withdrawal(alice).unwrap();
+
+        assert_eq!(retry_pending.table_id, table_id);
+        assert_eq!(retry_pending.amount, pending.amount);
+    }
 }
