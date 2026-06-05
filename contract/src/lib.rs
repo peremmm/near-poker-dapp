@@ -170,6 +170,27 @@ pub struct TableView {
     pub round_result: Option<RoundResult>,
 }
 
+#[near(serializers = [json])]
+pub struct GameStateView {
+    pub table_id: u64,
+    pub status: TableStatus,
+    pub players: Vec<AccountId>,
+    pub current_turn_index: Option<u8>,
+    pub current_player: Option<AccountId>,
+    pub pot: Balance,
+    pub community_cards: Vec<Card>,
+    pub remaining_deck_count: usize,
+    pub round_result: Option<RoundResult>,
+    pub last_action_at: Option<u64>,
+}
+
+#[near(serializers = [json])]
+pub struct CurrentTurnView {
+    pub table_id: u64,
+    pub current_turn_index: Option<u8>,
+    pub current_player: Option<AccountId>,
+}
+
 #[near(contract_state)]
 #[derive(PanicOnDefault)]
 pub struct Contract {
@@ -711,6 +732,81 @@ impl Contract {
             pot: table.pot,
             player_balances: table.player_balances.clone(),
             round_result: table.round_result.clone(),
+        })
+    }
+
+    pub fn get_open_tables(&self) -> Vec<TableView> {
+        self.tables
+            .iter()
+            .filter(|(_, table)| table.status == TableStatus::WaitingForPlayers)
+            .map(|(_, table)| TableView {
+                id: table.id,
+                creator_id: table.creator_id.clone(),
+                buy_in: table.buy_in,
+                players: table.players.clone(),
+                status: table.status.clone(),
+                created_at: table.created_at,
+                order_locked: table.order_locked,
+                current_turn_index: table.current_turn_index,
+                started_at: table.started_at,
+                last_action_at: table.last_action_at,
+                player_cards: table.player_cards.clone(),
+                community_cards: table.community_cards.clone(),
+                remaining_deck_count: table.deck.len(),
+                action_history: table.action_history.clone(),
+                pot: table.pot,
+                player_balances: table.player_balances.clone(),
+                round_result: table.round_result.clone(),
+            })
+            .collect()
+    }
+
+    pub fn get_player_balance(
+        &self,
+        table_id: u64,
+        player_id: AccountId,
+    ) -> Option<Balance> {
+        let table = self.tables.get(&table_id)?;
+
+        table
+            .player_balances
+            .iter()
+            .find(|balance| balance.player_id == player_id)
+            .map(|balance| balance.balance)
+    }
+
+    pub fn get_current_turn(&self, table_id: u64) -> Option<CurrentTurnView> {
+        let table = self.tables.get(&table_id)?;
+
+        let current_player = table.current_turn_index.and_then(|index| {
+            table.players.get(index as usize).cloned()
+        });
+
+        Some(CurrentTurnView {
+            table_id,
+            current_turn_index: table.current_turn_index,
+            current_player,
+        })
+    }
+
+    pub fn get_game_state(&self, table_id: u64) -> Option<GameStateView> {
+        let table = self.tables.get(&table_id)?;
+
+        let current_player = table.current_turn_index.and_then(|index| {
+            table.players.get(index as usize).cloned()
+        });
+
+        Some(GameStateView {
+            table_id,
+            status: table.status.clone(),
+            players: table.players.clone(),
+            current_turn_index: table.current_turn_index,
+            current_player,
+            pot: table.pot,
+            community_cards: table.community_cards.clone(),
+            remaining_deck_count: table.deck.len(),
+            round_result: table.round_result.clone(),
+            last_action_at: table.last_action_at,
         })
     }
 
@@ -2139,5 +2235,82 @@ mod tests {
 
         assert_eq!(pending.table_id, table_id);
         assert!(pending.amount > 0);
+    }
+
+    #[test]
+    fn get_open_tables_returns_waiting_tables_only() {
+        let owner = account("owner.testnet");
+        let alice = account("alice.testnet");
+        let bob = account("bob.testnet");
+        let carol = account("carol.testnet");
+
+        set_context(owner.clone());
+
+        let mut contract = Contract::new(owner, ONE_NEAR, ONE_NEAR * 10);
+
+        set_context_with_deposit(alice.clone(), ONE_NEAR);
+        let waiting_table_id = contract.create_table(ONE_NEAR * 2);
+
+        set_context_with_deposit(bob.clone(), ONE_NEAR);
+        let active_table_id = contract.create_table(ONE_NEAR * 2);
+
+        set_context_with_deposit(carol, ONE_NEAR * 3);
+        contract.join_table(active_table_id);
+
+        let open_tables = contract.get_open_tables();
+
+        assert_eq!(open_tables.len(), 1);
+        assert_eq!(open_tables[0].id, waiting_table_id);
+        assert_eq!(open_tables[0].status, TableStatus::WaitingForPlayers);
+    }
+
+    #[test]
+    fn get_player_balance_returns_expected_balance() {
+        let (contract, table_id, alice, _) = setup_active_table();
+
+        let balance = contract
+            .get_player_balance(table_id, alice)
+            .expect("Balance should exist");
+
+        assert_eq!(balance, ONE_NEAR * 2);
+    }
+
+    #[test]
+    fn get_player_balance_returns_none_for_non_player() {
+        let (contract, table_id, _, _) = setup_active_table();
+        let carol = account("carol.testnet");
+
+        let balance = contract.get_player_balance(table_id, carol);
+
+        assert_eq!(balance, None);
+    }
+
+    #[test]
+    fn get_current_turn_returns_first_player_initially() {
+        let (contract, table_id, alice, _) = setup_active_table();
+
+        let turn = contract
+            .get_current_turn(table_id)
+            .expect("Turn should exist");
+
+        assert_eq!(turn.current_turn_index, Some(0));
+        assert_eq!(turn.current_player, Some(alice));
+    }
+
+    #[test]
+    fn get_game_state_returns_expected_state() {
+        let (contract, table_id, alice, bob) = setup_active_table();
+
+        let state = contract
+            .get_game_state(table_id)
+            .expect("Game state should exist");
+
+        assert_eq!(state.table_id, table_id);
+        assert_eq!(state.status, TableStatus::Active);
+        assert_eq!(state.players, vec![alice, bob]);
+        assert_eq!(state.current_turn_index, Some(0));
+        assert_eq!(state.pot, 0);
+        assert_eq!(state.community_cards.len(), 0);
+        assert_eq!(state.remaining_deck_count, 48);
     }
 }
