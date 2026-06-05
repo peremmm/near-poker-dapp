@@ -11,6 +11,8 @@ const MAX_PLAYERS: usize = 2;
 const WITHDRAW_CALLBACK_GAS: Gas = Gas::from_tgas(10);
 // 10 minutes
 const ABANDON_TIMEOUT_NS: u64 = 10 * 60 * 1_000_000_000;
+const SMALL_BLIND: Balance = 100_000_000_000_000_000_000_000; // 0.1 NEAR
+const BIG_BLIND: Balance = 200_000_000_000_000_000_000_000;   // 0.2 NEAR
 
 pub type Balance = u128;
 
@@ -147,6 +149,10 @@ pub struct Table {
     pub action_history: Vec<ActionRecord>,
     pub pot: Balance,
     pub player_balances: Vec<PlayerBalance>,
+    pub small_blind: Balance,
+    pub big_blind: Balance,
+    pub small_blind_index: Option<u8>,
+    pub big_blind_index: Option<u8>,
     pub round_result: Option<RoundResult>,
 }
 
@@ -168,6 +174,10 @@ pub struct TableView {
     pub action_history: Vec<ActionRecord>,
     pub pot: Balance,
     pub player_balances: Vec<PlayerBalance>,
+    pub small_blind: Balance,
+    pub big_blind: Balance,
+    pub small_blind_index: Option<u8>,
+    pub big_blind_index: Option<u8>,
     pub round_result: Option<RoundResult>,
 }
 
@@ -310,6 +320,10 @@ impl Contract {
             action_history: Vec::new(),
             pot: 0,
             player_balances: Vec::new(),
+            small_blind: SMALL_BLIND,
+            big_blind: BIG_BLIND,
+            small_blind_index: None,
+            big_blind_index: None,
             round_result: None,
         };
 
@@ -742,6 +756,10 @@ impl Contract {
             action_history: table.action_history.clone(),
             pot: table.pot,
             player_balances: table.player_balances.clone(),
+            small_blind: table.small_blind,
+            big_blind: table.big_blind,
+            small_blind_index: table.small_blind_index,
+            big_blind_index: table.big_blind_index,
             round_result: table.round_result.clone(),
         })
     }
@@ -767,6 +785,10 @@ impl Contract {
                 action_history: table.action_history.clone(),
                 pot: table.pot,
                 player_balances: table.player_balances.clone(),
+                small_blind: table.small_blind,
+                big_blind: table.big_blind,
+                small_blind_index: table.small_blind_index,
+                big_blind_index: table.big_blind_index,
                 round_result: table.round_result.clone(),
             })
             .collect()
@@ -855,6 +877,19 @@ impl Contract {
             });
         }
 
+        assert!(
+            table.buy_in >= BIG_BLIND,
+            "Buy-in must be at least the big blind"
+        );
+
+        let small_blind_index: usize = 0;
+        let big_blind_index: usize = 1;
+
+        player_balances[small_blind_index].balance -= SMALL_BLIND;
+        player_balances[big_blind_index].balance -= BIG_BLIND;
+
+        let starting_pot = SMALL_BLIND + BIG_BLIND;
+
         let now = env::block_timestamp();
 
         table.status = TableStatus::Active;
@@ -865,8 +900,12 @@ impl Contract {
         table.deck = deck;
         table.player_cards = player_cards;
         table.community_cards = Vec::new();
-        table.pot = 0;
+        table.pot = starting_pot;
         table.player_balances = player_balances;
+        table.small_blind = SMALL_BLIND;
+        table.big_blind = BIG_BLIND;
+        table.small_blind_index = Some(small_blind_index as u8);
+        table.big_blind_index = Some(big_blind_index as u8);
     }
 
     fn build_deck() -> Vec<Card> {
@@ -1712,23 +1751,29 @@ mod tests {
     }
 
     #[test]
-    fn game_starts_with_player_internal_balances() {
+    fn game_starts_with_player_internal_balances_after_blinds() {
         let (contract, table_id, alice, bob) = setup_active_table();
 
         let table = contract.get_table(table_id).unwrap();
 
         assert_eq!(table.player_balances.len(), 2);
-        assert_eq!(get_player_balance(&table, &alice), ONE_NEAR * 2);
-        assert_eq!(get_player_balance(&table, &bob), ONE_NEAR * 2);
+        assert_eq!(
+            get_player_balance(&table, &alice),
+            ONE_NEAR * 2 - SMALL_BLIND
+        );
+        assert_eq!(
+            get_player_balance(&table, &bob),
+            ONE_NEAR * 2 - BIG_BLIND
+        );
     }
 
     #[test]
-    fn game_starts_with_zero_pot() {
+    fn game_starts_with_blinds_in_pot() {
         let (contract, table_id, _, _) = setup_active_table();
 
         let table = contract.get_table(table_id).unwrap();
 
-        assert_eq!(table.pot, 0);
+        assert_eq!(table.pot, SMALL_BLIND + BIG_BLIND);
     }
 
     #[test]
@@ -1748,7 +1793,7 @@ mod tests {
 
         assert_eq!(
             get_player_balance(&table, &alice),
-            ONE_NEAR * 2 - ONE_NEAR / 2
+            ONE_NEAR * 2 - SMALL_BLIND - ONE_NEAR / 2
         );
     }
 
@@ -1767,7 +1812,7 @@ mod tests {
 
         let table = contract.get_table(table_id).unwrap();
 
-        assert_eq!(table.pot, ONE_NEAR / 2);
+        assert_eq!(table.pot, SMALL_BLIND + BIG_BLIND + ONE_NEAR / 2);
     }
 
     #[test]
@@ -1810,9 +1855,15 @@ mod tests {
 
         let table = contract.get_table(table_id).unwrap();
 
-        assert_eq!(table.pot, 0);
-        assert_eq!(get_player_balance(&table, &alice), ONE_NEAR * 2);
-        assert_eq!(get_player_balance(&table, &bob), ONE_NEAR * 2);
+        assert_eq!(table.pot, SMALL_BLIND + BIG_BLIND);
+        assert_eq!(
+            get_player_balance(&table, &alice),
+            ONE_NEAR * 2 - SMALL_BLIND
+        );
+        assert_eq!(
+            get_player_balance(&table, &bob),
+            ONE_NEAR * 2 - BIG_BLIND
+        );
     }
 
     #[test]
@@ -1877,7 +1928,7 @@ mod tests {
 
         assert_eq!(
             get_player_balance(&before_resolution, &alice),
-            ONE_NEAR * 2 - ONE_NEAR / 2
+            ONE_NEAR * 2 - SMALL_BLIND - ONE_NEAR / 2
         );
 
         set_context(owner);
@@ -1888,7 +1939,7 @@ mod tests {
 
         assert_eq!(
             get_player_balance(&after_resolution, &alice),
-            ONE_NEAR * 2
+            ONE_NEAR * 2 + BIG_BLIND
         );
     }
 
@@ -1937,10 +1988,22 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "Cannot resolve round with empty pot")]
-    fn cannot_resolve_with_empty_pot() {
-        let (mut contract, table_id, alice, _) = setup_active_table();
-        let owner = contract.get_owner();
+    #[should_panic(expected = "Table is not active")]
+    fn cannot_resolve_waiting_table() {
+        let owner = account("owner.testnet");
+        let alice = account("alice.testnet");
+
+        set_context(owner.clone());
+
+        let mut contract = Contract::new(
+            owner.clone(),
+            U128(ONE_NEAR),
+            U128(ONE_NEAR * 10),
+        );
+
+        set_context_with_deposit(alice.clone(), ONE_NEAR * 3);
+
+        let table_id = contract.create_table(U128(ONE_NEAR * 2));
 
         set_context(owner);
 
@@ -2203,8 +2266,7 @@ mod tests {
 
         let table_before = contract.get_table(table_id).unwrap();
 
-        assert_eq!(table_before.pot, ONE_NEAR);
-
+        assert_eq!(table_before.pot, SMALL_BLIND + BIG_BLIND + ONE_NEAR);
         let last_action_at = table_before.last_action_at.unwrap();
 
         set_context_with_timestamp(bob.clone(), last_action_at + ABANDON_TIMEOUT_NS);
@@ -2218,12 +2280,14 @@ mod tests {
 
         assert_eq!(
             get_player_balance(&table_after, &alice),
-            ONE_NEAR * 2 - ONE_NEAR + ONE_NEAR / 2
+            ONE_NEAR * 2 - SMALL_BLIND - ONE_NEAR
+                + (SMALL_BLIND + BIG_BLIND + ONE_NEAR) / 2
         );
 
         assert_eq!(
             get_player_balance(&table_after, &bob),
-            ONE_NEAR * 2 + ONE_NEAR / 2
+            ONE_NEAR * 2 - BIG_BLIND
+                + (SMALL_BLIND + BIG_BLIND + ONE_NEAR) / 2
         );
     }
 
@@ -2283,7 +2347,7 @@ mod tests {
             .get_player_balance(table_id, alice)
             .expect("Balance should exist");
 
-        assert_eq!(balance, ONE_NEAR * 2);
+        assert_eq!(balance, ONE_NEAR * 2 - SMALL_BLIND);
     }
 
     #[test]
@@ -2320,7 +2384,7 @@ mod tests {
         assert_eq!(state.status, TableStatus::Active);
         assert_eq!(state.players, vec![alice, bob]);
         assert_eq!(state.current_turn_index, Some(0));
-        assert_eq!(state.pot, 0);
+        assert_eq!(state.pot, SMALL_BLIND + BIG_BLIND);
         assert_eq!(state.community_cards.len(), 0);
         assert_eq!(state.remaining_deck_count, 48);
     }
@@ -2502,5 +2566,42 @@ mod tests {
         assert_eq!(table.players, vec![alice]);
         assert_eq!(table.buy_in, ONE_NEAR * 2);
         assert_eq!(table.status, TableStatus::WaitingForPlayers);
+    }
+
+    #[test]
+    fn game_sets_small_and_big_blind_indices() {
+        let (contract, table_id, _, _) = setup_active_table();
+
+        let table = contract.get_table(table_id).unwrap();
+
+        assert_eq!(table.small_blind_index, Some(0));
+        assert_eq!(table.big_blind_index, Some(1));
+    }
+
+    #[test]
+    fn small_and_big_blinds_are_recorded_on_table() {
+        let (contract, table_id, _, _) = setup_active_table();
+
+        let table = contract.get_table(table_id).unwrap();
+
+        assert_eq!(table.small_blind, SMALL_BLIND);
+        assert_eq!(table.big_blind, BIG_BLIND);
+    }
+
+    #[test]
+    fn blinds_are_deducted_from_correct_players() {
+        let (contract, table_id, alice, bob) = setup_active_table();
+
+        let table = contract.get_table(table_id).unwrap();
+
+        assert_eq!(
+            get_player_balance(&table, &alice),
+            ONE_NEAR * 2 - SMALL_BLIND
+        );
+
+        assert_eq!(
+            get_player_balance(&table, &bob),
+            ONE_NEAR * 2 - BIG_BLIND
+        );
     }
 }
