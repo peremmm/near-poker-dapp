@@ -8,6 +8,8 @@ use std::collections::HashSet;
 const TABLE_STORAGE_OVERHEAD_BYTES: u64 = 256;
 const MAX_PLAYERS: usize = 2;
 const WITHDRAW_CALLBACK_GAS: Gas = Gas::from_tgas(10);
+// 15 seconds
+const ABANDON_TIMEOUT_NS: u64 = 15 * 1_000_000_000;
 
 pub type Balance = u128;
 
@@ -137,6 +139,7 @@ pub struct Table {
     pub order_locked: bool,
     pub current_turn_index: Option<u8>,
     pub started_at: Option<u64>,
+    pub last_action_at: Option<u64>,
     pub deck: Vec<Card>,
     pub player_cards: Vec<PlayerCards>,
     pub community_cards: Vec<Card>,
@@ -157,6 +160,7 @@ pub struct TableView {
     pub order_locked: bool,
     pub current_turn_index: Option<u8>,
     pub started_at: Option<u64>,
+    pub last_action_at: Option<u64>,
     pub player_cards: Vec<PlayerCards>,
     pub community_cards: Vec<Card>,
     pub remaining_deck_count: usize,
@@ -270,6 +274,7 @@ impl Contract {
             order_locked: false,
             current_turn_index: None,
             started_at: None,
+            last_action_at: None,
             deck: Vec::new(),
             player_cards: Vec::new(),
             community_cards: Vec::new(),
@@ -450,6 +455,8 @@ impl Contract {
         table.current_turn_index =
             Some(((current_turn_index + 1) % table.players.len()) as u8);
 
+        table.last_action_at = Some(env::block_timestamp());
+
         self.tables.insert(table_id, table);
     }
 
@@ -522,10 +529,9 @@ impl Contract {
             .expect("Table does not exist")
             .clone();
 
-        assert_eq!(
-            table.status,
-            TableStatus::Finished,
-            "Withdrawals are only allowed after the table is finished"
+        assert!(
+            table.status == TableStatus::Finished || table.status == TableStatus::Cancelled,
+            "Withdrawals are only allowed after the table is finished or cancelled"
         );
 
         assert!(
@@ -617,6 +623,71 @@ impl Contract {
         }
     }
 
+    pub fn claim_timeout_refund(&mut self, table_id: u64) {
+        self.assert_not_paused();
+
+        let caller_id = env::predecessor_account_id();
+
+        let mut table = self
+            .tables
+            .get(&table_id)
+            .expect("Table does not exist")
+            .clone();
+
+        assert_eq!(
+            table.status,
+            TableStatus::Active,
+            "Timeout refund is only available for active tables"
+        );
+
+        assert!(
+            table.players.contains(&caller_id),
+            "Only table players can claim timeout refund"
+        );
+
+        let last_action_at = table
+            .last_action_at
+            .expect("Last action timestamp is not set");
+
+        assert!(
+            env::block_timestamp() >= last_action_at + ABANDON_TIMEOUT_NS,
+            "Timeout has not passed yet"
+        );
+
+        if table.pot > 0 {
+            let player_count = table.players.len() as u128;
+            let refund_share = table.pot / player_count;
+            let remainder = table.pot % player_count;
+
+            for player_balance in table.player_balances.iter_mut() {
+                player_balance.balance += refund_share;
+            }
+
+            if remainder > 0 {
+                let first_player = table
+                    .players
+                    .first()
+                    .expect("Table should have at least one player")
+                    .clone();
+
+                let first_player_balance = table
+                    .player_balances
+                    .iter_mut()
+                    .find(|balance| balance.player_id == first_player)
+                    .expect("First player balance does not exist");
+
+                first_player_balance.balance += remainder;
+            }
+
+            table.pot = 0;
+        }
+
+        table.status = TableStatus::Cancelled;
+        table.current_turn_index = None;
+
+        self.tables.insert(table_id, table);
+    }
+
     pub fn get_pending_withdrawal(&self, player_id: AccountId) -> Option<PendingWithdrawal> {
         self.pending_withdrawals.get(&player_id).cloned()
     }
@@ -632,6 +703,7 @@ impl Contract {
             order_locked: table.order_locked,
             current_turn_index: table.current_turn_index,
             started_at: table.started_at,
+            last_action_at: table.last_action_at,
             player_cards: table.player_cards.clone(),
             community_cards: table.community_cards.clone(),
             remaining_deck_count: table.deck.len(),
@@ -676,10 +748,13 @@ impl Contract {
             });
         }
 
+        let now = env::block_timestamp();
+
         table.status = TableStatus::Active;
         table.order_locked = true;
         table.current_turn_index = Some(0);
-        table.started_at = Some(env::block_timestamp());
+        table.started_at = Some(now);
+        table.last_action_at = Some(now);
         table.deck = deck;
         table.player_cards = player_cards;
         table.community_cards = Vec::new();
@@ -1951,5 +2026,118 @@ mod tests {
         );
 
         assert!(contract.get_pending_withdrawal(alice).is_none());
+    }
+
+    fn set_context_with_timestamp(predecessor: AccountId, timestamp: u64) {
+        let context = VMContextBuilder::new()
+            .predecessor_account_id(predecessor)
+            .block_timestamp(timestamp)
+            .build();
+
+        testing_env!(context);
+    }
+
+    #[test]
+    #[should_panic(expected = "Timeout has not passed yet")]
+    fn cannot_claim_timeout_refund_before_timeout() {
+        let (mut contract, table_id, alice, _) = setup_active_table();
+
+        let table = contract.get_table(table_id).unwrap();
+        let last_action_at = table.last_action_at.unwrap();
+
+        set_context_with_timestamp(alice, last_action_at + ABANDON_TIMEOUT_NS - 1);
+
+        contract.claim_timeout_refund(table_id);
+    }
+
+    #[test]
+    fn can_claim_timeout_refund_after_timeout() {
+        let (mut contract, table_id, alice, _) = setup_active_table();
+
+        let table = contract.get_table(table_id).unwrap();
+        let last_action_at = table.last_action_at.unwrap();
+
+        set_context_with_timestamp(alice, last_action_at + ABANDON_TIMEOUT_NS);
+
+        contract.claim_timeout_refund(table_id);
+
+        let table_after = contract.get_table(table_id).unwrap();
+
+        assert_eq!(table_after.status, TableStatus::Cancelled);
+        assert_eq!(table_after.current_turn_index, None);
+    }
+
+    #[test]
+    #[should_panic(expected = "Only table players can claim timeout refund")]
+    fn non_player_cannot_claim_timeout_refund() {
+        let (mut contract, table_id, _, _) = setup_active_table();
+        let carol = account("carol.testnet");
+
+        let table = contract.get_table(table_id).unwrap();
+        let last_action_at = table.last_action_at.unwrap();
+
+        set_context_with_timestamp(carol, last_action_at + ABANDON_TIMEOUT_NS);
+
+        contract.claim_timeout_refund(table_id);
+    }
+
+    #[test]
+    fn timeout_refund_moves_pot_back_to_player_balances() {
+        let (mut contract, table_id, alice, bob) = setup_active_table();
+
+        set_context(alice.clone());
+
+        contract.submit_action(
+            table_id,
+            PlayerAction::Raise {
+                amount: ONE_NEAR,
+            },
+        );
+
+        let table_before = contract.get_table(table_id).unwrap();
+
+        assert_eq!(table_before.pot, ONE_NEAR);
+
+        let last_action_at = table_before.last_action_at.unwrap();
+
+        set_context_with_timestamp(bob.clone(), last_action_at + ABANDON_TIMEOUT_NS);
+
+        contract.claim_timeout_refund(table_id);
+
+        let table_after = contract.get_table(table_id).unwrap();
+
+        assert_eq!(table_after.pot, 0);
+        assert_eq!(table_after.status, TableStatus::Cancelled);
+
+        assert_eq!(
+            get_player_balance(&table_after, &alice),
+            ONE_NEAR * 2 - ONE_NEAR + ONE_NEAR / 2
+        );
+
+        assert_eq!(
+            get_player_balance(&table_after, &bob),
+            ONE_NEAR * 2 + ONE_NEAR / 2
+        );
+    }
+
+    #[test]
+    fn can_withdraw_after_timeout_cancelled_table() {
+        let (mut contract, table_id, alice, _) = setup_active_table();
+
+        let table = contract.get_table(table_id).unwrap();
+        let last_action_at = table.last_action_at.unwrap();
+
+        set_context_with_timestamp(alice.clone(), last_action_at + ABANDON_TIMEOUT_NS);
+
+        contract.claim_timeout_refund(table_id);
+
+        set_context(alice.clone());
+
+        contract.withdraw(table_id);
+
+        let pending = contract.get_pending_withdrawal(alice).unwrap();
+
+        assert_eq!(pending.table_id, table_id);
+        assert!(pending.amount > 0);
     }
 }
