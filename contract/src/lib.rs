@@ -2,6 +2,7 @@ use near_sdk::{
     borsh, env, ext_contract, near, AccountId, BorshStorageKey, Gas, NearToken,
     PanicOnDefault, Promise, PromiseResult,
 };
+use near_sdk::json_types::U128;
 use near_sdk::store::UnorderedMap;
 use std::collections::HashSet;
 
@@ -206,7 +207,10 @@ pub struct Contract {
 #[near]
 impl Contract {
     #[init]
-    pub fn new(owner_id: AccountId, min_buy_in: Balance, max_buy_in: Balance) -> Self {
+    #[init]
+    pub fn new(owner_id: AccountId, min_buy_in: U128, max_buy_in: U128) -> Self {
+        let min_buy_in: Balance = min_buy_in.0;
+        let max_buy_in: Balance = max_buy_in.0;
         assert!(!env::state_exists(), "Contract is already initialized");
         assert!(min_buy_in > 0, "Minimum buy-in must be greater than zero");
         assert!(
@@ -240,7 +244,9 @@ impl Contract {
         self.paused
     }
 
-    pub fn set_buy_in_range(&mut self, min_buy_in: Balance, max_buy_in: Balance) {
+    pub fn set_buy_in_range(&mut self, min_buy_in: U128, max_buy_in: U128) {
+        let min_buy_in: Balance = min_buy_in.0;
+        let max_buy_in: Balance = max_buy_in.0;
         self.assert_owner();
 
         assert!(min_buy_in > 0, "Minimum buy-in must be greater than zero");
@@ -983,7 +989,7 @@ mod tests {
 
         set_context(owner.clone());
 
-        let contract = Contract::new(owner.clone(), ONE_NEAR, ONE_NEAR * 10);
+        let contract = Contract::new(owner.clone(), U128(ONE_NEAR), U128(ONE_NEAR * 10));
 
         assert_eq!(contract.get_owner(), owner);
         assert_eq!(contract.is_paused(), false);
@@ -999,11 +1005,11 @@ mod tests {
 
         set_context(owner.clone());
 
-        let mut contract = Contract::new(owner.clone(), ONE_NEAR, ONE_NEAR * 10);
+        let mut contract = Contract::new(owner.clone(), U128(ONE_NEAR), U128(ONE_NEAR * 10));
 
         set_context(owner);
 
-        contract.set_buy_in_range(ONE_NEAR * 2, ONE_NEAR * 20);
+        contract.set_buy_in_range(U128(ONE_NEAR * 2), U128(ONE_NEAR * 20));
 
         let range = contract.get_buy_in_range();
         assert_eq!(range.min_buy_in, ONE_NEAR * 2);
@@ -1018,11 +1024,11 @@ mod tests {
 
         set_context(owner.clone());
 
-        let mut contract = Contract::new(owner, ONE_NEAR, ONE_NEAR * 10);
+        let mut contract = Contract::new(owner, U128(ONE_NEAR), U128(ONE_NEAR * 10));
 
         set_context(alice);
 
-        contract.set_buy_in_range(ONE_NEAR * 2, ONE_NEAR * 20);
+        contract.set_buy_in_range(U128(ONE_NEAR * 2), U128(ONE_NEAR * 20));
     }
 
     #[test]
@@ -1032,7 +1038,7 @@ mod tests {
 
         set_context(owner.clone());
 
-        Contract::new(owner, ONE_NEAR * 10, ONE_NEAR);
+        Contract::new(owner, U128(ONE_NEAR * 10), U128(ONE_NEAR));
     }
 
     #[test]
@@ -1041,7 +1047,7 @@ mod tests {
 
         set_context(owner.clone());
 
-        let mut contract = Contract::new(owner.clone(), ONE_NEAR, ONE_NEAR * 10);
+        let mut contract = Contract::new(owner.clone(), U128(ONE_NEAR), U128(ONE_NEAR * 10));
 
         set_context(owner);
 
@@ -1056,7 +1062,7 @@ mod tests {
 
         set_context(owner.clone());
 
-        let mut contract = Contract::new(owner.clone(), ONE_NEAR, ONE_NEAR * 10);
+        let mut contract = Contract::new(owner.clone(), U128(ONE_NEAR), U128(ONE_NEAR * 10));
 
         set_context(owner.clone());
 
@@ -1078,7 +1084,7 @@ mod tests {
 
         set_context(owner.clone());
 
-        let mut contract = Contract::new(owner, ONE_NEAR, ONE_NEAR * 10);
+        let mut contract = Contract::new(owner, U128(ONE_NEAR), U128(ONE_NEAR * 10));
 
         set_context(alice);
 
@@ -1093,7 +1099,7 @@ mod tests {
 
         set_context(owner.clone());
 
-        let mut contract = Contract::new(owner.clone(), ONE_NEAR, ONE_NEAR * 10);
+        let mut contract = Contract::new(owner.clone(), U128(ONE_NEAR), U128(ONE_NEAR * 10));
 
         set_context(owner);
 
@@ -1111,7 +1117,7 @@ mod tests {
 
         set_context(owner.clone());
 
-        let mut contract = Contract::new(owner.clone(), ONE_NEAR, ONE_NEAR * 10);
+        let mut contract = Contract::new(owner.clone(), U128(ONE_NEAR), U128(ONE_NEAR * 10));
 
         set_context(owner);
 
@@ -1126,7 +1132,7 @@ mod tests {
 
         set_context(owner.clone());
 
-        let mut contract = Contract::new(owner, ONE_NEAR, ONE_NEAR * 10);
+        let mut contract = Contract::new(owner, U128(ONE_NEAR), U128(ONE_NEAR * 10));
 
         set_context_with_deposit(alice.clone(), ONE_NEAR);
 
@@ -1151,7 +1157,7 @@ mod tests {
 
         set_context(owner.clone());
 
-        let mut contract = Contract::new(owner, ONE_NEAR, ONE_NEAR * 10);
+        let mut contract = Contract::new(owner, U128(ONE_NEAR), U128(ONE_NEAR * 10));
 
         set_context_with_deposit(alice, ONE_NEAR);
 
@@ -1166,7 +1172,7 @@ mod tests {
 
         set_context(owner.clone());
 
-        let mut contract = Contract::new(owner, ONE_NEAR, ONE_NEAR * 10);
+        let mut contract = Contract::new(owner, U128(ONE_NEAR), U128(ONE_NEAR * 10));
 
         set_context_with_deposit(alice, ONE_NEAR);
 
@@ -1181,7 +1187,7 @@ mod tests {
 
         set_context(owner.clone());
 
-        let mut contract = Contract::new(owner, ONE_NEAR, ONE_NEAR * 10);
+        let mut contract = Contract::new(owner, U128(ONE_NEAR), U128(ONE_NEAR * 10));
 
         set_context(alice);
 
@@ -1196,7 +1202,7 @@ mod tests {
 
         set_context(owner.clone());
 
-        let mut contract = Contract::new(owner.clone(), ONE_NEAR, ONE_NEAR * 10);
+        let mut contract = Contract::new(owner.clone(), U128(ONE_NEAR), U128(ONE_NEAR * 10));
 
         set_context(owner);
 
@@ -1215,7 +1221,7 @@ mod tests {
 
         set_context(owner.clone());
 
-        let mut contract = Contract::new(owner, ONE_NEAR, ONE_NEAR * 10);
+        let mut contract = Contract::new(owner, U128(ONE_NEAR), U128(ONE_NEAR * 10));
 
         set_context_with_deposit(alice, 1);
 
@@ -1229,7 +1235,7 @@ mod tests {
 
         set_context(owner.clone());
 
-        let mut contract = Contract::new(owner, ONE_NEAR, ONE_NEAR * 10);
+        let mut contract = Contract::new(owner, U128(ONE_NEAR), U128(ONE_NEAR * 10));
 
         set_context_with_deposit(alice.clone(), ONE_NEAR);
 
@@ -1251,7 +1257,7 @@ mod tests {
 
         set_context(owner.clone());
 
-        let mut contract = Contract::new(owner, ONE_NEAR, ONE_NEAR * 10);
+        let mut contract = Contract::new(owner, U128(ONE_NEAR), U128(ONE_NEAR * 10));
 
         set_context_with_deposit(alice.clone(), ONE_NEAR);
 
@@ -1275,7 +1281,7 @@ mod tests {
 
         set_context(owner.clone());
 
-        let mut contract = Contract::new(owner, ONE_NEAR, ONE_NEAR * 10);
+        let mut contract = Contract::new(owner, U128(ONE_NEAR), U128(ONE_NEAR * 10));
 
         set_context_with_deposit(alice.clone(), ONE_NEAR);
 
@@ -1294,7 +1300,7 @@ mod tests {
 
         set_context(owner.clone());
 
-        let mut contract = Contract::new(owner, ONE_NEAR, ONE_NEAR * 10);
+        let mut contract = Contract::new(owner, U128(ONE_NEAR), U128(ONE_NEAR * 10));
 
         set_context_with_deposit(bob, ONE_NEAR * 3);
 
@@ -1311,7 +1317,7 @@ mod tests {
 
         set_context(owner.clone());
 
-        let mut contract = Contract::new(owner, ONE_NEAR, ONE_NEAR * 10);
+        let mut contract = Contract::new(owner, U128(ONE_NEAR), U128(ONE_NEAR * 10));
 
         set_context_with_deposit(alice, ONE_NEAR);
 
@@ -1335,7 +1341,7 @@ mod tests {
 
         set_context(owner.clone());
 
-        let mut contract = Contract::new(owner, ONE_NEAR, ONE_NEAR * 10);
+        let mut contract = Contract::new(owner, U128(ONE_NEAR), U128(ONE_NEAR * 10));
 
         set_context_with_deposit(alice, ONE_NEAR);
 
@@ -1355,7 +1361,7 @@ mod tests {
 
         set_context(owner.clone());
 
-        let mut contract = Contract::new(owner, ONE_NEAR, ONE_NEAR * 10);
+        let mut contract = Contract::new(owner, U128(ONE_NEAR), U128(ONE_NEAR * 10));
 
         set_context_with_deposit(alice, ONE_NEAR);
 
@@ -1375,7 +1381,7 @@ mod tests {
 
         set_context(owner.clone());
 
-        let mut contract = Contract::new(owner.clone(), ONE_NEAR, ONE_NEAR * 10);
+        let mut contract = Contract::new(owner.clone(), U128(ONE_NEAR), U128(ONE_NEAR * 10));
 
         set_context_with_deposit(alice, ONE_NEAR);
 
@@ -1398,7 +1404,7 @@ mod tests {
 
         set_context(owner.clone());
 
-        let mut contract = Contract::new(owner, ONE_NEAR, ONE_NEAR * 10);
+        let mut contract = Contract::new(owner, U128(ONE_NEAR), U128(ONE_NEAR * 10));
 
         set_context_with_deposit(alice.clone(), ONE_NEAR);
 
@@ -1432,7 +1438,7 @@ mod tests {
 
         set_context(owner.clone());
 
-        let mut contract = Contract::new(owner, ONE_NEAR, ONE_NEAR * 10);
+        let mut contract = Contract::new(owner, U128(ONE_NEAR), U128(ONE_NEAR * 10));
 
         set_context_with_deposit(alice.clone(), ONE_NEAR);
 
@@ -1460,7 +1466,7 @@ mod tests {
 
         set_context(owner.clone());
 
-        let mut contract = Contract::new(owner, ONE_NEAR, ONE_NEAR * 10);
+        let mut contract = Contract::new(owner, U128(ONE_NEAR), U128(ONE_NEAR * 10));
 
         set_context_with_deposit(alice, ONE_NEAR);
 
@@ -1483,7 +1489,7 @@ mod tests {
 
         set_context(owner.clone());
 
-        let mut contract = Contract::new(owner, ONE_NEAR, ONE_NEAR * 10);
+        let mut contract = Contract::new(owner, U128(ONE_NEAR), U128(ONE_NEAR * 10));
 
         set_context_with_deposit(alice.clone(), ONE_NEAR);
 
@@ -1513,7 +1519,7 @@ mod tests {
 
         set_context(owner.clone());
 
-        let mut contract = Contract::new(owner, ONE_NEAR, ONE_NEAR * 10);
+        let mut contract = Contract::new(owner, U128(ONE_NEAR), U128(ONE_NEAR * 10));
 
         set_context_with_deposit(alice, ONE_NEAR);
 
@@ -1545,7 +1551,7 @@ mod tests {
 
         set_context(owner.clone());
 
-        let mut contract = Contract::new(owner, ONE_NEAR, ONE_NEAR * 10);
+        let mut contract = Contract::new(owner, U128(ONE_NEAR), U128(ONE_NEAR * 10));
 
         set_context_with_deposit(alice, ONE_NEAR);
 
@@ -1568,7 +1574,7 @@ mod tests {
 
         set_context(owner.clone());
 
-        let mut contract = Contract::new(owner, ONE_NEAR, ONE_NEAR * 10);
+        let mut contract = Contract::new(owner, U128(ONE_NEAR), U128(ONE_NEAR * 10));
 
         set_context_with_deposit(alice, ONE_NEAR);
 
@@ -1590,7 +1596,7 @@ mod tests {
 
         set_context(owner.clone());
 
-        let mut contract = Contract::new(owner, ONE_NEAR, ONE_NEAR * 10);
+        let mut contract = Contract::new(owner, U128(ONE_NEAR), U128(ONE_NEAR * 10));
 
         set_context_with_deposit(alice.clone(), ONE_NEAR);
 
@@ -1664,7 +1670,7 @@ mod tests {
 
         set_context(owner.clone());
 
-        let mut contract = Contract::new(owner, ONE_NEAR, ONE_NEAR * 10);
+        let mut contract = Contract::new(owner, U128(ONE_NEAR), U128(ONE_NEAR * 10));
 
         set_context_with_deposit(alice.clone(), ONE_NEAR);
 
@@ -2246,7 +2252,7 @@ mod tests {
 
         set_context(owner.clone());
 
-        let mut contract = Contract::new(owner, ONE_NEAR, ONE_NEAR * 10);
+        let mut contract = Contract::new(owner, U128(ONE_NEAR), U128(ONE_NEAR * 10));
 
         set_context_with_deposit(alice.clone(), ONE_NEAR);
         let waiting_table_id = contract.create_table(ONE_NEAR * 2);
