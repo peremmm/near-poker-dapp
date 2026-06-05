@@ -144,9 +144,7 @@ function App() {
     }
   }
 
-  async function loadSelectedTable() {
-    const tableId = Number(selectedTableId);
-
+  async function loadSelectedTableById(tableId: number) {
     if (!Number.isInteger(tableId) || tableId < 0) {
       setViewError("Enter a valid table ID");
       return;
@@ -161,6 +159,12 @@ function App() {
         getGameState(tableId),
         getCurrentTurn(tableId),
       ]);
+
+      setSelectedTableId(String(tableId));
+      setActionTableId(String(tableId));
+      setResolveTableId(String(tableId));
+      setTimeoutTableId(String(tableId));
+      setWithdrawTableId(String(tableId));
 
       setSelectedTable(table);
       setGameState(state);
@@ -182,6 +186,12 @@ function App() {
     }
   }
 
+  async function loadSelectedTable() {
+    const tableId = Number(selectedTableId);
+
+    await loadSelectedTableById(tableId);
+  }
+
   function requireWalletSelector(): WalletSelector {
     if (!selector || !accountId) {
       throw new Error("Connect Meteor Wallet first");
@@ -193,6 +203,7 @@ function App() {
   async function runTransaction(
       label: string,
       action: () => Promise<unknown>,
+      afterSuccess?: () => Promise<void>,
   ) {
     setIsSendingTx(true);
     setTxStatus(null);
@@ -201,9 +212,12 @@ function App() {
     try {
       await action();
       setTxStatus(`${label} transaction submitted successfully`);
+
       await refreshViews();
 
-      if (selectedTableId) {
+      if (afterSuccess) {
+        await afterSuccess();
+      } else if (selectedTableId) {
         await loadSelectedTable();
       }
     } catch (error) {
@@ -236,27 +250,34 @@ function App() {
   }
 
   async function handleJoinTable() {
-    await runTransaction("Join table", async () => {
-      const walletSelector = requireWalletSelector();
-      const tableId = Number(joinTableId);
+    const tableId = Number(joinTableId);
 
-      if (!Number.isInteger(tableId) || tableId < 0) {
-        throw new Error("Enter a valid table ID");
-      }
+    await runTransaction(
+        "Join table",
+        async () => {
+          const walletSelector = requireWalletSelector();
 
-      const buyInYocto = BigInt(nearToYocto(joinBuyInNear));
-      const storageDepositYocto = BigInt(nearToYocto(joinStorageDepositNear));
-      const totalDepositYocto = (buyInYocto + storageDepositYocto).toString();
+          if (!Number.isInteger(tableId) || tableId < 0) {
+            throw new Error("Enter a valid table ID");
+          }
 
-      await callChangeMethod(
-          walletSelector,
-          "join_table",
-          {
-            table_id: tableId,
-          },
-          totalDepositYocto,
-      );
-    });
+          const buyInYocto = BigInt(nearToYocto(joinBuyInNear));
+          const storageDepositYocto = BigInt(nearToYocto(joinStorageDepositNear));
+          const totalDepositYocto = (buyInYocto + storageDepositYocto).toString();
+
+          await callChangeMethod(
+              walletSelector,
+              "join_table",
+              {
+                table_id: tableId,
+              },
+              totalDepositYocto,
+          );
+        },
+        async () => {
+          await loadSelectedTableById(tableId);
+        },
+    );
   }
 
   async function handleSubmitAction() {
@@ -337,11 +358,59 @@ function App() {
     });
   }
 
-  function formatCard(card: { rank: string; suit: string }): string {
-    return `${card.rank} of ${card.suit}`;
+  function rankLabel(rank: string): string {
+    switch (rank) {
+      case "Two":
+        return "2";
+      case "Three":
+        return "3";
+      case "Four":
+        return "4";
+      case "Five":
+        return "5";
+      case "Six":
+        return "6";
+      case "Seven":
+        return "7";
+      case "Eight":
+        return "8";
+      case "Nine":
+        return "9";
+      case "Ten":
+        return "10";
+      case "Jack":
+        return "J";
+      case "Queen":
+        return "Q";
+      case "King":
+        return "K";
+      case "Ace":
+        return "A";
+      default:
+        return rank;
+    }
   }
 
-  function getOwnCards(): string[] {
+  function suitSymbol(suit: string): string {
+    switch (suit) {
+      case "Clubs":
+        return "♣";
+      case "Diamonds":
+        return "♦";
+      case "Hearts":
+        return "♥";
+      case "Spades":
+        return "♠";
+      default:
+        return suit;
+    }
+  }
+
+  function isRedSuit(suit: string): boolean {
+    return suit === "Hearts" || suit === "Diamonds";
+  }
+
+  function getOwnCards() {
     if (!selectedTable || !accountId) {
       return [];
     }
@@ -350,7 +419,19 @@ function App() {
         (hand) => hand.player_id === accountId,
     );
 
-    return ownHand?.cards.map(formatCard) ?? [];
+    return ownHand?.cards ?? [];
+  }
+
+  function renderCard(card: { rank: string; suit: string }, index: number) {
+    return (
+        <div
+            key={`${card.rank}-${card.suit}-${index}`}
+            className={`playing-card ${isRedSuit(card.suit) ? "red-card" : "black-card"}`}
+        >
+          <span className="card-rank">{rankLabel(card.rank)}</span>
+          <span className="card-suit">{suitSymbol(card.suit)}</span>
+        </div>
+    );
   }
 
   return (
@@ -416,8 +497,15 @@ function App() {
                 <ul>
                   {openTables.map((table) => (
                       <li key={table.id}>
-                        Table #{table.id} — Buy-in {formatNear(table.buy_in)} —{" "}
-                        Players {table.players.length}
+                        <button
+                            className="link-button"
+                            onClick={() => {
+                              void loadSelectedTableById(table.id);
+                            }}
+                        >
+                          Table #{table.id} — Buy-in {formatNear(table.buy_in)} — Players{" "}
+                          {table.players.length}
+                        </button>
                       </li>
                   ))}
                 </ul>
@@ -441,6 +529,161 @@ function App() {
           </section>
 
           <hr />
+
+          {selectedTable && (
+              <section>
+                <div className="table-box">
+                  <div className="table-box-header">
+                    <div>
+                      <h3>Table #{selectedTable.id}</h3>
+                      <p>Status: {selectedTable.status}</p>
+                    </div>
+
+                    <div className="pot-badge">
+                      Pot: {formatNear(selectedTable.pot)}
+                    </div>
+                  </div>
+
+                  <div className="table-info-grid">
+                    <p>Creator: {selectedTable.creator_id}</p>
+                    <p>Buy-in: {formatNear(selectedTable.buy_in)}</p>
+                    <p>Current turn: {currentTurn?.current_player ?? "None"}</p>
+                    <p>Remaining deck: {selectedTable.remaining_deck_count}</p>
+                    <p>Started: {formatTimestamp(selectedTable.started_at)}</p>
+                    <p>Last action: {formatTimestamp(selectedTable.last_action_at)}</p>
+                  </div>
+
+                  <div className="card-zone">
+                    <h4>Community Cards</h4>
+
+                    {selectedTable.community_cards.length > 0 ? (
+                        <div className="cards-row">
+                          {selectedTable.community_cards.map(renderCard)}
+                        </div>
+                    ) : (
+                        <p>No community cards yet.</p>
+                    )}
+                  </div>
+
+                  <div className="card-zone">
+                    <h4>My Cards</h4>
+
+                    {accountId ? (
+                        getOwnCards().length > 0 ? (
+                            <div className="cards-row">
+                              {getOwnCards().map(renderCard)}
+                            </div>
+                        ) : (
+                            <p>No cards found for your connected account.</p>
+                        )
+                    ) : (
+                        <p>Connect wallet to view your cards.</p>
+                    )}
+                  </div>
+
+                  <div className="players-box">
+                    <h4>Players</h4>
+
+                    <ul>
+                      {selectedTable.players.map((player) => (
+                          <li key={player}>
+                            {player}
+                            {player === accountId ? " (you)" : ""}
+                          </li>
+                      ))}
+                    </ul>
+                  </div>
+
+                  <div className="balances-box">
+                    <h4>Player Balances</h4>
+
+                    {selectedTable.player_balances.length === 0 ? (
+                        <p>No balances yet.</p>
+                    ) : (
+                        <ul>
+                          {selectedTable.player_balances.map((balance) => (
+                              <li key={balance.player_id}>
+                                {balance.player_id}: {formatNear(balance.balance)}
+                              </li>
+                          ))}
+                        </ul>
+                    )}
+                  </div>
+                </div>
+              </section>
+          )}
+
+          {accountId && (
+              <section>
+                <h3>Your Contract State</h3>
+
+                <p>
+                  Selected-table balance:{" "}
+                  {playerBalance ? formatNear(playerBalance) : "No balance loaded"}
+                </p>
+
+                <p>
+                  Pending withdrawal:{" "}
+                  {pendingWithdrawal
+                      ? `${formatNear(pendingWithdrawal.amount)} from table #${pendingWithdrawal.table_id}`
+                      : "None"}
+                </p>
+              </section>
+          )}
+
+          {gameState && (
+              <section>
+                <h3>Game State</h3>
+
+                <div className="state-grid">
+                  <p>Status: {gameState.status}</p>
+                  <p>Current player: {gameState.current_player ?? "None"}</p>
+                  <p>Pot: {formatNear(gameState.pot)}</p>
+                  <p>Community cards: {gameState.community_cards.length}</p>
+                  <p>Remaining deck: {gameState.remaining_deck_count}</p>
+                  <p>Last action: {formatTimestamp(gameState.last_action_at)}</p>
+                </div>
+
+                {gameState.round_result && (
+                    <div className="result-box">
+                      <p>Winner: {gameState.round_result.winner_id}</p>
+                      <p>Pot awarded: {formatNear(gameState.round_result.pot_awarded)}</p>
+                      <p>Resolved at: {formatTimestamp(gameState.round_result.resolved_at)}</p>
+                    </div>
+                )}
+              </section>
+          )}
+
+          {currentTurn && (
+              <section>
+                <h3>Current Turn</h3>
+
+                <div className="state-grid">
+                  <p>Index: {currentTurn.current_turn_index ?? "None"}</p>
+                  <p>Player: {currentTurn.current_player ?? "None"}</p>
+                </div>
+              </section>
+          )}
+
+          {accountId && (
+              <section>
+                <h3>Your Contract State</h3>
+
+                <div className="state-grid">
+                  <p>
+                    Selected-table balance:{" "}
+                    {playerBalance ? formatNear(playerBalance) : "No balance loaded"}
+                  </p>
+
+                  <p>
+                    Pending withdrawal:{" "}
+                    {pendingWithdrawal
+                        ? `${formatNear(pendingWithdrawal.amount)} from table #${pendingWithdrawal.table_id}`
+                        : "None"}
+                  </p>
+                </div>
+              </section>
+          )}
 
           <section>
             <div className="section-header">
@@ -651,103 +894,6 @@ function App() {
               </div>
             </div>
           </section>
-
-          {selectedTable && (
-              <section>
-                <h3>Selected Table #{selectedTable.id}</h3>
-
-                <p>Status: {selectedTable.status}</p>
-                <p>Creator: {selectedTable.creator_id}</p>
-                <p>Buy-in: {formatNear(selectedTable.buy_in)}</p>
-                <p>Players: {selectedTable.players.join(", ")}</p>
-                <p>Order locked: {selectedTable.order_locked ? "Yes" : "No"}</p>
-                <p>Started: {formatTimestamp(selectedTable.started_at)}</p>
-                <p>Last action: {formatTimestamp(selectedTable.last_action_at)}</p>
-                <p>Pot: {formatNear(selectedTable.pot)}</p>
-                <p>Remaining deck count: {selectedTable.remaining_deck_count}</p>
-
-                <h4>Your Cards</h4>
-
-                {accountId ? (
-                    getOwnCards().length > 0 ? (
-                        <ul>
-                          {getOwnCards().map((card, index) => (
-                              <li key={`${card}-${index}`}>{card}</li>
-                          ))}
-                        </ul>
-                    ) : (
-                        <p>No cards found for your connected account.</p>
-                    )
-                ) : (
-                    <p>Connect wallet to view your cards.</p>
-                )}
-
-                <h4>Community Cards</h4>
-
-                {selectedTable.community_cards.length > 0 ? (
-                    <ul>
-                      {selectedTable.community_cards.map((card, index) => (
-                          <li key={`${card.rank}-${card.suit}-${index}`}>
-                            {formatCard(card)}
-                          </li>
-                      ))}
-                    </ul>
-                ) : (
-                    <p>No community cards yet.</p>
-                )}
-
-                <h4>Player Balances</h4>
-                {selectedTable.player_balances.length === 0 ? (
-                    <p>No balances yet.</p>
-                ) : (
-                    <ul>
-                      {selectedTable.player_balances.map((balance) => (
-                          <li key={balance.player_id}>
-                            {balance.player_id}: {formatNear(balance.balance)}
-                          </li>
-                      ))}
-                    </ul>
-                )}
-              </section>
-          )}
-
-          {gameState && (
-              <section>
-                <h3>Game State</h3>
-
-                <p>Status: {gameState.status}</p>
-                <p>Current player: {gameState.current_player ?? "None"}</p>
-                <p>Pot: {formatNear(gameState.pot)}</p>
-                <p>Community cards: {gameState.community_cards.length}</p>
-              </section>
-          )}
-
-          {currentTurn && (
-              <section>
-                <h3>Current Turn</h3>
-
-                <p>Index: {currentTurn.current_turn_index ?? "None"}</p>
-                <p>Player: {currentTurn.current_player ?? "None"}</p>
-              </section>
-          )}
-
-          {accountId && (
-              <section>
-                <h3>Your Contract State</h3>
-
-                <p>
-                  Selected-table balance:{" "}
-                  {playerBalance ? formatNear(playerBalance) : "No balance loaded"}
-                </p>
-
-                <p>
-                  Pending withdrawal:{" "}
-                  {pendingWithdrawal
-                      ? `${formatNear(pendingWithdrawal.amount)} from table #${pendingWithdrawal.table_id}`
-                      : "None"}
-                </p>
-              </section>
-          )}
         </section>
       </main>
   );

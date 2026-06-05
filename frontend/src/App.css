@@ -119,3 +119,127 @@ select {
   font-size: 0.9rem;
   color: #666;
 }
+
+.table-box {
+  padding: 20px;
+  border: 1px solid #ddd;
+  border-radius: 18px;
+  background: #fbfbfb;
+}
+
+.table-box-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 16px;
+  margin-bottom: 16px;
+}
+
+.table-box-header h3 {
+  margin: 0;
+}
+
+.pot-badge {
+  padding: 10px 14px;
+  border-radius: 999px;
+  background: #111;
+  color: white;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.table-info-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  gap: 8px 16px;
+  margin-bottom: 20px;
+}
+
+.table-info-grid p {
+  margin: 0;
+}
+
+.card-zone {
+  margin-top: 18px;
+}
+
+.cards-row {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.playing-card {
+  width: 58px;
+  height: 82px;
+  border: 1px solid #222;
+  border-radius: 10px;
+  background: white;
+  display: grid;
+  place-items: center;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.12);
+  font-weight: 800;
+}
+
+.card-rank {
+  font-size: 1.25rem;
+  line-height: 1;
+}
+
+.card-suit {
+  font-size: 1.5rem;
+  line-height: 1;
+}
+
+.red-card {
+  color: #c1121f;
+}
+
+.black-card {
+  color: #111;
+}
+
+.players-box,
+.balances-box {
+  margin-top: 18px;
+  padding: 14px;
+  border-radius: 12px;
+  background: white;
+  border: 1px solid #eee;
+}
+
+.link-button {
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: #111;
+  font-weight: 700;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.link-button:hover {
+  opacity: 0.7;
+}
+
+.state-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  gap: 8px 16px;
+  padding: 14px;
+  border-radius: 12px;
+  background: #fafafa;
+  border: 1px solid #eee;
+}
+
+.state-grid p {
+  margin: 0;
+}
+
+.result-box {
+  margin-top: 12px;
+  padding: 14px;
+  border-radius: 12px;
+  background: #e8fff0;
+  border: 1px solid #b7efca;
+}
