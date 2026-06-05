@@ -9,8 +9,8 @@ use std::collections::HashSet;
 const TABLE_STORAGE_OVERHEAD_BYTES: u64 = 256;
 const MAX_PLAYERS: usize = 2;
 const WITHDRAW_CALLBACK_GAS: Gas = Gas::from_tgas(10);
-// 15 seconds
-const ABANDON_TIMEOUT_NS: u64 = 15 * 1_000_000_000;
+// 10 minutes
+const ABANDON_TIMEOUT_NS: u64 = 10 * 60 * 1_000_000_000;
 
 pub type Balance = u128;
 
@@ -329,13 +329,14 @@ impl Contract {
             Balance::from(storage_used) * env::storage_byte_cost().as_yoctonear();
 
         let storage_cost = measured_storage_cost.max(estimated_storage_cost);
+        let required_deposit = buy_in + storage_cost;
 
         assert!(
-            attached_deposit >= storage_cost,
-            "Insufficient deposit to cover storage"
+            attached_deposit >= required_deposit,
+            "Insufficient deposit for buy-in and storage"
         );
 
-        let refund = attached_deposit - storage_cost;
+        let refund = attached_deposit - required_deposit;
 
         if refund > 0 {
             Promise::new(creator_id).transfer(NearToken::from_yoctonear(refund));
@@ -1138,7 +1139,7 @@ mod tests {
 
         let mut contract = Contract::new(owner, U128(ONE_NEAR), U128(ONE_NEAR * 10));
 
-        set_context_with_deposit(alice.clone(), ONE_NEAR);
+        set_context_with_deposit(alice.clone(), ONE_NEAR * 3);
 
         let table_id = contract.create_table(U128(ONE_NEAR * 2));
 
@@ -1184,7 +1185,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "Insufficient deposit to cover storage")]
+    #[should_panic(expected = "Insufficient deposit for buy-in and storage")]
     fn create_table_without_deposit_fails() {
         let owner = account("owner.testnet");
         let alice = account("alice.testnet");
@@ -1218,7 +1219,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "Insufficient deposit to cover storage")]
+    #[should_panic(expected = "Insufficient deposit for buy-in and storage")]
     fn create_table_with_insufficient_storage_deposit_fails() {
         let owner = account("owner.testnet");
         let alice = account("alice.testnet");
@@ -1241,7 +1242,7 @@ mod tests {
 
         let mut contract = Contract::new(owner, U128(ONE_NEAR), U128(ONE_NEAR * 10));
 
-        set_context_with_deposit(alice.clone(), ONE_NEAR);
+        set_context_with_deposit(alice.clone(), ONE_NEAR * 3);
 
         let table_id = contract.create_table(U128(ONE_NEAR * 2));
 
@@ -1263,7 +1264,7 @@ mod tests {
 
         let mut contract = Contract::new(owner, U128(ONE_NEAR), U128(ONE_NEAR * 10));
 
-        set_context_with_deposit(alice.clone(), ONE_NEAR);
+        set_context_with_deposit(alice.clone(), ONE_NEAR * 3);
 
         let table_id = contract.create_table(U128(ONE_NEAR * 2));
 
@@ -1287,7 +1288,7 @@ mod tests {
 
         let mut contract = Contract::new(owner, U128(ONE_NEAR), U128(ONE_NEAR * 10));
 
-        set_context_with_deposit(alice.clone(), ONE_NEAR);
+        set_context_with_deposit(alice.clone(), ONE_NEAR * 3);
 
         let table_id = contract.create_table(U128(ONE_NEAR * 2));
 
@@ -1323,7 +1324,7 @@ mod tests {
 
         let mut contract = Contract::new(owner, U128(ONE_NEAR), U128(ONE_NEAR * 10));
 
-        set_context_with_deposit(alice, ONE_NEAR);
+        set_context_with_deposit(alice, ONE_NEAR * 3);
 
         let table_id = contract.create_table(U128(ONE_NEAR * 2));
 
@@ -1347,7 +1348,7 @@ mod tests {
 
         let mut contract = Contract::new(owner, U128(ONE_NEAR), U128(ONE_NEAR * 10));
 
-        set_context_with_deposit(alice, ONE_NEAR);
+        set_context_with_deposit(alice, ONE_NEAR * 3);
 
         let table_id = contract.create_table(U128(ONE_NEAR * 2));
 
@@ -1387,7 +1388,7 @@ mod tests {
 
         let mut contract = Contract::new(owner.clone(), U128(ONE_NEAR), U128(ONE_NEAR * 10));
 
-        set_context_with_deposit(alice, ONE_NEAR);
+        set_context_with_deposit(alice, ONE_NEAR * 3);
 
         let table_id = contract.create_table(U128(ONE_NEAR * 2));
 
@@ -1410,7 +1411,7 @@ mod tests {
 
         let mut contract = Contract::new(owner, U128(ONE_NEAR), U128(ONE_NEAR * 10));
 
-        set_context_with_deposit(alice.clone(), ONE_NEAR);
+        set_context_with_deposit(alice.clone(), ONE_NEAR * 3);
 
         let table_id = contract.create_table(U128(ONE_NEAR * 2));
 
@@ -1444,7 +1445,7 @@ mod tests {
 
         let mut contract = Contract::new(owner, U128(ONE_NEAR), U128(ONE_NEAR * 10));
 
-        set_context_with_deposit(alice.clone(), ONE_NEAR);
+        set_context_with_deposit(alice.clone(), ONE_NEAR * 3);
 
         let table_id = contract.create_table(U128(ONE_NEAR * 2));
 
@@ -1472,7 +1473,7 @@ mod tests {
 
         let mut contract = Contract::new(owner, U128(ONE_NEAR), U128(ONE_NEAR * 10));
 
-        set_context_with_deposit(alice, ONE_NEAR);
+        set_context_with_deposit(alice, ONE_NEAR * 3);
 
         let table_id = contract.create_table(U128(ONE_NEAR * 2));
 
@@ -1495,7 +1496,7 @@ mod tests {
 
         let mut contract = Contract::new(owner, U128(ONE_NEAR), U128(ONE_NEAR * 10));
 
-        set_context_with_deposit(alice.clone(), ONE_NEAR);
+        set_context_with_deposit(alice.clone(), ONE_NEAR * 3);
 
         let table_id = contract.create_table(U128(ONE_NEAR * 2));
 
@@ -1525,7 +1526,7 @@ mod tests {
 
         let mut contract = Contract::new(owner, U128(ONE_NEAR), U128(ONE_NEAR * 10));
 
-        set_context_with_deposit(alice, ONE_NEAR);
+        set_context_with_deposit(alice, ONE_NEAR * 3);
 
         let table_id = contract.create_table(U128(ONE_NEAR * 2));
 
@@ -1557,7 +1558,7 @@ mod tests {
 
         let mut contract = Contract::new(owner, U128(ONE_NEAR), U128(ONE_NEAR * 10));
 
-        set_context_with_deposit(alice, ONE_NEAR);
+        set_context_with_deposit(alice, ONE_NEAR * 3);
 
         let table_id = contract.create_table(U128(ONE_NEAR * 2));
 
@@ -1580,7 +1581,7 @@ mod tests {
 
         let mut contract = Contract::new(owner, U128(ONE_NEAR), U128(ONE_NEAR * 10));
 
-        set_context_with_deposit(alice, ONE_NEAR);
+        set_context_with_deposit(alice, ONE_NEAR * 3);
 
         let table_id = contract.create_table(U128(ONE_NEAR * 2));
 
@@ -1602,7 +1603,7 @@ mod tests {
 
         let mut contract = Contract::new(owner, U128(ONE_NEAR), U128(ONE_NEAR * 10));
 
-        set_context_with_deposit(alice.clone(), ONE_NEAR);
+        set_context_with_deposit(alice.clone(), ONE_NEAR * 3);
 
         let table_id = contract.create_table(U128(ONE_NEAR * 2));
 
@@ -1676,7 +1677,7 @@ mod tests {
 
         let mut contract = Contract::new(owner, U128(ONE_NEAR), U128(ONE_NEAR * 10));
 
-        set_context_with_deposit(alice.clone(), ONE_NEAR);
+        set_context_with_deposit(alice.clone(), ONE_NEAR * 3);
 
         let table_id = contract.create_table(U128(ONE_NEAR * 2));
 
@@ -2258,10 +2259,10 @@ mod tests {
 
         let mut contract = Contract::new(owner, U128(ONE_NEAR), U128(ONE_NEAR * 10));
 
-        set_context_with_deposit(alice.clone(), ONE_NEAR);
+        set_context_with_deposit(alice.clone(), ONE_NEAR * 3);
         let waiting_table_id = contract.create_table(U128(ONE_NEAR * 2));
 
-        set_context_with_deposit(bob.clone(), ONE_NEAR);
+        set_context_with_deposit(bob.clone(), ONE_NEAR * 3);
         let active_table_id = contract.create_table(U128(ONE_NEAR * 2));
 
         set_context_with_deposit(carol, ONE_NEAR * 3);
@@ -2456,5 +2457,50 @@ mod tests {
 
         assert_eq!(retry_pending.table_id, table_id);
         assert_eq!(retry_pending.amount, pending.amount);
+    }
+
+    #[test]
+    #[should_panic(expected = "Insufficient deposit for buy-in and storage")]
+    fn create_table_with_storage_only_deposit_fails() {
+        let owner = account("owner.testnet");
+        let alice = account("alice.testnet");
+
+        set_context(owner.clone());
+
+        let mut contract = Contract::new(
+            owner,
+            U128(ONE_NEAR),
+            U128(ONE_NEAR * 10),
+        );
+
+        set_context_with_deposit(alice, ONE_NEAR / 10);
+
+        contract.create_table(U128(ONE_NEAR * 2));
+    }
+
+    #[test]
+    fn create_table_with_buy_in_plus_storage_deposit_succeeds() {
+        let owner = account("owner.testnet");
+        let alice = account("alice.testnet");
+
+        set_context(owner.clone());
+
+        let mut contract = Contract::new(
+            owner,
+            U128(ONE_NEAR),
+            U128(ONE_NEAR * 10),
+        );
+
+        set_context_with_deposit(alice.clone(), ONE_NEAR * 3);
+
+        let table_id = contract.create_table(U128(ONE_NEAR * 2));
+
+        let table = contract.get_table(table_id).unwrap();
+
+        assert_eq!(table.id, table_id);
+        assert_eq!(table.creator_id, alice.clone());
+        assert_eq!(table.players, vec![alice]);
+        assert_eq!(table.buy_in, ONE_NEAR * 2);
+        assert_eq!(table.status, TableStatus::WaitingForPlayers);
     }
 }

@@ -219,16 +219,18 @@ function App() {
   async function handleCreateTable() {
     await runTransaction("Create table", async () => {
       const walletSelector = requireWalletSelector();
-      const buyInYocto = nearToYocto(createBuyInNear);
-      const storageDepositYocto = nearToYocto(createStorageDepositNear);
+
+      const buyInYocto = BigInt(nearToYocto(createBuyInNear));
+      const storageDepositYocto = BigInt(nearToYocto(createStorageDepositNear));
+      const totalDepositYocto = (buyInYocto + storageDepositYocto).toString();
 
       await callChangeMethod(
           walletSelector,
           "create_table",
           {
-            buy_in: buyInYocto,
+            buy_in: buyInYocto.toString(),
           },
-          storageDepositYocto,
+          totalDepositYocto,
       );
     });
   }
@@ -333,6 +335,22 @@ function App() {
         table_id: tableId,
       });
     });
+  }
+
+  function formatCard(card: { rank: string; suit: string }): string {
+    return `${card.rank} of ${card.suit}`;
+  }
+
+  function getOwnCards(): string[] {
+    if (!selectedTable || !accountId) {
+      return [];
+    }
+
+    const ownHand = selectedTable.player_cards.find(
+        (hand) => hand.player_id === accountId,
+    );
+
+    return ownHand?.cards.map(formatCard) ?? [];
   }
 
   return (
@@ -450,7 +468,7 @@ function App() {
                 </label>
 
                 <label>
-                  Storage deposit in NEAR
+                  Extra storage deposit in NEAR
                   <input
                       value={createStorageDepositNear}
                       onChange={(event) => setCreateStorageDepositNear(event.target.value)}
@@ -464,6 +482,9 @@ function App() {
                 >
                   Create Table
                 </button>
+                <p className="hint">
+                  Attached deposit = buy-in + extra storage deposit.
+                </p>
               </div>
 
               <div className="form-card">
@@ -644,6 +665,36 @@ function App() {
                 <p>Last action: {formatTimestamp(selectedTable.last_action_at)}</p>
                 <p>Pot: {formatNear(selectedTable.pot)}</p>
                 <p>Remaining deck count: {selectedTable.remaining_deck_count}</p>
+
+                <h4>Your Cards</h4>
+
+                {accountId ? (
+                    getOwnCards().length > 0 ? (
+                        <ul>
+                          {getOwnCards().map((card, index) => (
+                              <li key={`${card}-${index}`}>{card}</li>
+                          ))}
+                        </ul>
+                    ) : (
+                        <p>No cards found for your connected account.</p>
+                    )
+                ) : (
+                    <p>Connect wallet to view your cards.</p>
+                )}
+
+                <h4>Community Cards</h4>
+
+                {selectedTable.community_cards.length > 0 ? (
+                    <ul>
+                      {selectedTable.community_cards.map((card, index) => (
+                          <li key={`${card.rank}-${card.suit}-${index}`}>
+                            {formatCard(card)}
+                          </li>
+                      ))}
+                    </ul>
+                ) : (
+                    <p>No community cards yet.</p>
+                )}
 
                 <h4>Player Balances</h4>
                 {selectedTable.player_balances.length === 0 ? (
