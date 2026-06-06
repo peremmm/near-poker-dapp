@@ -33,6 +33,7 @@ pub enum StorageKey {
     TablesV2,
     TablesV3,
     TablesV4,
+    TablesV5,
     PendingWithdrawals,
 }
 
@@ -172,6 +173,9 @@ pub struct Table {
     pub current_turn_index: Option<u8>,
     pub started_at: Option<u64>,
     pub last_action_at: Option<u64>,
+    pub round_number: u64,
+    pub dealer_index: u8,
+    pub next_round_votes: Vec<AccountId>,
     pub deck: Vec<Card>,
     pub player_cards: Vec<PlayerCards>,
     pub community_cards: Vec<Card>,
@@ -200,6 +204,9 @@ pub struct TableView {
     pub current_turn_index: Option<u8>,
     pub started_at: Option<u64>,
     pub last_action_at: Option<u64>,
+    pub round_number: u64,
+    pub dealer_index: u8,
+    pub next_round_votes: Vec<AccountId>,
     pub community_cards: Vec<Card>,
     pub remaining_deck_count: usize,
     pub action_history: Vec<ActionRecord>,
@@ -307,7 +314,7 @@ impl Contract {
     pub fn dev_reset_tables(&mut self) {
         self.assert_owner();
 
-        self.tables = UnorderedMap::new(StorageKey::TablesV4);
+        self.tables = UnorderedMap::new(StorageKey::TablesV5);
         self.next_table_id = 0;
     }
 
@@ -357,6 +364,9 @@ impl Contract {
             current_turn_index: None,
             started_at: None,
             last_action_at: None,
+            round_number: 0,
+            dealer_index: 0,
+            next_round_votes: Vec::new(),
             deck: Vec::new(),
             player_cards: Vec::new(),
             community_cards: Vec::new(),
@@ -843,6 +853,52 @@ impl Contract {
             .clone()
     }
 
+    pub fn vote_next_round(&mut self, table_id: u64) {
+        self.assert_not_paused();
+
+        let caller_id = env::predecessor_account_id();
+
+        let mut table = self
+            .tables
+            .get(&table_id)
+            .expect("Table does not exist")
+            .clone();
+
+        assert_eq!(
+            table.status,
+            TableStatus::Finished,
+            "Next round can only be started after the table is finished"
+        );
+
+        assert!(
+            table.players.contains(&caller_id),
+            "Only table players can vote for next round"
+        );
+
+        assert!(
+            !table.next_round_votes.contains(&caller_id),
+            "Player already voted for next round"
+        );
+
+        table.next_round_votes.push(caller_id);
+
+        if table.next_round_votes.len() == table.players.len() {
+            self.start_next_round(&mut table);
+        }
+
+        self.tables.insert(table_id, table);
+    }
+
+    pub fn get_revealed_cards(&self, table_id: u64) -> Option<Vec<PlayerCards>> {
+        let table = self.tables.get(&table_id)?;
+
+        if table.status != TableStatus::Finished {
+            return None;
+        }
+
+        Some(table.player_cards.clone())
+    }
+
     pub fn withdraw(&mut self, table_id: u64) -> Promise {
         self.assert_not_paused();
 
@@ -1035,6 +1091,9 @@ impl Contract {
             current_turn_index: table.current_turn_index,
             started_at: table.started_at,
             last_action_at: table.last_action_at,
+            round_number: table.round_number,
+            dealer_index: table.dealer_index,
+            next_round_votes: table.next_round_votes.clone(),
             community_cards: table.community_cards.clone(),
             remaining_deck_count: table.deck.len(),
             action_history: table.action_history.clone(),
@@ -1066,6 +1125,9 @@ impl Contract {
                 current_turn_index: table.current_turn_index,
                 started_at: table.started_at,
                 last_action_at: table.last_action_at,
+                round_number: table.round_number,
+                dealer_index: table.dealer_index,
+                next_round_votes: table.next_round_votes.clone(),
                 community_cards: table.community_cards.clone(),
                 remaining_deck_count: table.deck.len(),
                 action_history: table.action_history.clone(),
@@ -1228,6 +1290,124 @@ impl Contract {
         table.big_blind = BIG_BLIND;
         table.small_blind_index = Some(small_blind_index as u8);
         table.big_blind_index = Some(big_blind_index as u8);
+        table.round_number = 1;
+        table.dealer_index = 0;
+        table.next_round_votes = Vec::new();
+    }
+
+    fn start_next_round(&self, table: &mut Table) {
+        assert_eq!(
+            table.players.len(),
+            2,
+            "Next round currently supports 2 players only"
+        );
+
+        let next_dealer_index = (table.dealer_index as usize + 1) % table.players.len();
+        let small_blind_index = next_dealer_index;
+        let big_blind_index = (next_dealer_index + 1) % table.players.len();
+
+        let small_blind_player = table.players[small_blind_index].clone();
+        let big_blind_player = table.players[big_blind_index].clone();
+
+        {
+            let small_blind_balance = table
+                .player_balances
+                .iter()
+                .find(|balance| balance.player_id == small_blind_player)
+                .expect("Small blind balance does not exist")
+                .balance;
+
+            assert!(
+                small_blind_balance >= SMALL_BLIND,
+                "Small blind player does not have enough balance"
+            );
+        }
+
+        {
+            let big_blind_balance = table
+                .player_balances
+                .iter()
+                .find(|balance| balance.player_id == big_blind_player)
+                .expect("Big blind balance does not exist")
+                .balance;
+
+            assert!(
+                big_blind_balance >= BIG_BLIND,
+                "Big blind player does not have enough balance"
+            );
+        }
+
+        let mut deck = Self::build_deck();
+        Self::shuffle_deck(&mut deck);
+
+        let mut player_cards = Vec::new();
+
+        for player_id in table.players.iter() {
+            let first_card = deck.pop().expect("Deck should contain enough cards");
+            let second_card = deck.pop().expect("Deck should contain enough cards");
+
+            player_cards.push(PlayerCards {
+                player_id: player_id.clone(),
+                cards: vec![first_card, second_card],
+            });
+        }
+
+        {
+            let balance = table
+                .player_balances
+                .iter_mut()
+                .find(|balance| balance.player_id == small_blind_player)
+                .expect("Small blind balance does not exist");
+
+            balance.balance -= SMALL_BLIND;
+        }
+
+        {
+            let balance = table
+                .player_balances
+                .iter_mut()
+                .find(|balance| balance.player_id == big_blind_player)
+                .expect("Big blind balance does not exist");
+
+            balance.balance -= BIG_BLIND;
+        }
+
+        table.round_number += 1;
+        table.dealer_index = next_dealer_index as u8;
+        table.status = TableStatus::Active;
+        table.game_stage = GameStage::PreFlop;
+        table.current_turn_index = Some(small_blind_index as u8);
+        table.started_at = Some(env::block_timestamp());
+        table.last_action_at = Some(env::block_timestamp());
+
+        table.deck = deck;
+        table.player_cards = player_cards;
+        table.community_cards = Vec::new();
+
+        table.pot = SMALL_BLIND + BIG_BLIND;
+        table.current_bet = BIG_BLIND;
+
+        table.small_blind = SMALL_BLIND;
+        table.big_blind = BIG_BLIND;
+        table.small_blind_index = Some(small_blind_index as u8);
+        table.big_blind_index = Some(big_blind_index as u8);
+
+        table.betting_round = vec![
+            PlayerBetState {
+                player_id: table.players[small_blind_index].clone(),
+                contribution: SMALL_BLIND,
+                has_acted: false,
+            },
+            PlayerBetState {
+                player_id: table.players[big_blind_index].clone(),
+                contribution: BIG_BLIND,
+                has_acted: false,
+            },
+        ];
+
+        table.round_result = None;
+        table.action_history = Vec::new();
+        table.next_round_votes = Vec::new();
     }
 
     fn build_deck() -> Vec<Card> {
@@ -4038,5 +4218,128 @@ mod tests {
         let cards = contract.get_my_cards(table_id, carol);
 
         assert_eq!(cards, None);
+    }
+
+    #[test]
+    fn player_can_vote_next_round_after_finished() {
+        let (mut contract, table_id, alice, _) = setup_finished_table_with_pot();
+
+        set_context(alice.clone());
+
+        contract.vote_next_round(table_id);
+
+        let table = contract.get_table(table_id).unwrap();
+
+        assert_eq!(table.next_round_votes, vec![alice]);
+        assert_eq!(table.status, TableStatus::Finished);
+    }
+
+    #[test]
+    #[should_panic(expected = "Player already voted for next round")]
+    fn duplicate_next_round_vote_fails() {
+        let (mut contract, table_id, alice, _) = setup_finished_table_with_pot();
+
+        set_context(alice.clone());
+        contract.vote_next_round(table_id);
+
+        set_context(alice);
+        contract.vote_next_round(table_id);
+    }
+
+    #[test]
+    #[should_panic(expected = "Only table players can vote for next round")]
+    fn non_player_cannot_vote_next_round() {
+        let (mut contract, table_id, _, _) = setup_finished_table_with_pot();
+        let carol = account("carol.testnet");
+
+        set_context(carol);
+
+        contract.vote_next_round(table_id);
+    }
+
+    #[test]
+    fn both_votes_start_next_round() {
+        let (mut contract, table_id, alice, bob) = setup_finished_table_with_pot();
+
+        set_context(alice);
+        contract.vote_next_round(table_id);
+
+        set_context(bob);
+        contract.vote_next_round(table_id);
+
+        let table = contract.get_table(table_id).unwrap();
+
+        assert_eq!(table.status, TableStatus::Active);
+        assert_eq!(table.game_stage, GameStage::PreFlop);
+        assert_eq!(table.community_cards.len(), 0);
+        assert_eq!(table.remaining_deck_count, 48);
+        assert_eq!(table.round_number, 2);
+        assert_eq!(table.next_round_votes.len(), 0);
+    }
+
+    #[test]
+    fn next_round_rotates_blinds() {
+        let (mut contract, table_id, alice, bob) = setup_finished_table_with_pot();
+
+        let before = contract.get_table(table_id).unwrap();
+
+        assert_eq!(before.small_blind_index, Some(0));
+        assert_eq!(before.big_blind_index, Some(1));
+
+        set_context(alice.clone());
+        contract.vote_next_round(table_id);
+
+        set_context(bob.clone());
+        contract.vote_next_round(table_id);
+
+        let after = contract.get_table(table_id).unwrap();
+
+        assert_eq!(after.small_blind_index, Some(1));
+        assert_eq!(after.big_blind_index, Some(0));
+
+        assert_eq!(after.players[0], alice);
+        assert_eq!(after.players[1], bob);
+    }
+
+    #[test]
+    fn next_round_clears_result_and_action_history() {
+        let (mut contract, table_id, alice, bob) = setup_finished_table_with_pot();
+
+        let finished = contract.get_table(table_id).unwrap();
+        assert!(finished.round_result.is_some());
+        assert!(!finished.action_history.is_empty());
+
+        set_context(alice);
+        contract.vote_next_round(table_id);
+
+        set_context(bob);
+        contract.vote_next_round(table_id);
+
+        let next_round = contract.get_table(table_id).unwrap();
+
+        assert_eq!(next_round.round_result, None);
+        assert_eq!(next_round.action_history.len(), 0);
+    }
+
+    #[test]
+    fn revealed_cards_available_after_finished() {
+        let (contract, table_id, _, _) = setup_finished_table_with_pot();
+
+        let revealed = contract
+            .get_revealed_cards(table_id)
+            .expect("Cards should be revealed after finish");
+
+        assert_eq!(revealed.len(), 2);
+        assert_eq!(revealed[0].cards.len(), 2);
+        assert_eq!(revealed[1].cards.len(), 2);
+    }
+
+    #[test]
+    fn revealed_cards_hidden_while_active() {
+        let (contract, table_id, _, _) = setup_active_table();
+
+        let revealed = contract.get_revealed_cards(table_id);
+
+        assert_eq!(revealed, None);
     }
 }

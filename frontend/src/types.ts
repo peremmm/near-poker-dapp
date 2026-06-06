@@ -75,6 +75,9 @@ export type TableView = {
     small_blind_index: number | null;
     big_blind_index: number | null;
     round_result: RoundResult | null;
+    round_number: number;
+    dealer_index: number;
+    next_round_votes: string[];
 };
 
 export type CurrentTurnView = {

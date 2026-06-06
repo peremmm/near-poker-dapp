@@ -7,6 +7,7 @@ import type {
     CurrentTurnView,
     GameStateView,
     PendingWithdrawal,
+    PlayerCards,
     TableView,
 } from "./types";
 
@@ -87,5 +88,13 @@ export function getMyCards(
     return viewFunction<Card[] | null>("get_my_cards", {
         table_id: tableId,
         player_id: playerId,
+    });
+}
+
+export function getRevealedCards(
+    tableId: number,
+): Promise<PlayerCards[] | null> {
+    return viewFunction<PlayerCards[] | null>("get_revealed_cards", {
+        table_id: tableId,
     });
 }

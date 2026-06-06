@@ -12,6 +12,7 @@ import {
   getOpenTables,
   getPendingWithdrawal,
   getPlayerBalance,
+  getRevealedCards,
   getTable,
 } from "./contract-views";
 import { callChangeMethod, nearToYocto } from "./contract-changes";
@@ -21,6 +22,7 @@ import type {
   CurrentTurnView,
   GameStateView,
   PendingWithdrawal,
+  PlayerCards,
   TableView,
 } from "./types";
 
@@ -69,6 +71,8 @@ function App() {
 
   const [advanceStageTableId, setAdvanceStageTableId] = useState("");
   const [myCards, setMyCards] = useState<{ rank: string; suit: string }[]>([]);
+  const [revealedCards, setRevealedCards] = useState<PlayerCards[] | null>(null);
+  const [nextRoundTableId, setNextRoundTableId] = useState("");
 
   useEffect(() => {
     async function setup() {
@@ -159,10 +163,11 @@ function App() {
     setViewError(null);
 
     try {
-      const [table, state, turn] = await Promise.all([
+      const [table, state, turn, revealed] = await Promise.all([
         getTable(tableId),
         getGameState(tableId),
         getCurrentTurn(tableId),
+        getRevealedCards(tableId),
       ]);
 
       setSelectedTableId(String(tableId));
@@ -175,6 +180,8 @@ function App() {
       setSelectedTable(table);
       setGameState(state);
       setCurrentTurn(turn);
+      setRevealedCards(revealed);
+      setNextRoundTableId(String(tableId));
 
       if (accountId) {
         const [balance, cards] = await Promise.all([
@@ -365,6 +372,21 @@ function App() {
       }
 
       await callChangeMethod(walletSelector, "withdraw", {
+        table_id: tableId,
+      });
+    });
+  }
+
+  async function handleVoteNextRound() {
+    await runTransaction("Play next round", async () => {
+      const walletSelector = requireWalletSelector();
+      const tableId = Number(nextRoundTableId);
+
+      if (!Number.isInteger(tableId) || tableId < 0) {
+        throw new Error("Enter a valid table ID");
+      }
+
+      await callChangeMethod(walletSelector, "vote_next_round", {
         table_id: tableId,
       });
     });
@@ -593,6 +615,40 @@ function App() {
 
           <hr />
 
+          {gameState && (
+              <section>
+                <h3>Game State</h3>
+
+                <div className="state-grid">
+                  <p>Status: {gameState.status}</p>
+                  <p>Current player: {gameState.current_player ?? "None"}</p>
+                  <p>Pot: {formatNear(gameState.pot)}</p>
+                  <p>Community cards: {gameState.community_cards.length}</p>
+                  <p>Remaining deck: {gameState.remaining_deck_count}</p>
+                  <p>Last action: {formatTimestamp(gameState.last_action_at)}</p>
+                </div>
+
+                {gameState.round_result && (
+                    <div className="result-box">
+                      <p>Winner: {gameState.round_result.winner_id}</p>
+                      <p>Pot awarded: {formatNear(gameState.round_result.pot_awarded)}</p>
+                      <p>Resolved at: {formatTimestamp(gameState.round_result.resolved_at)}</p>
+                    </div>
+                )}
+              </section>
+          )}
+
+          {currentTurn && (
+              <section>
+                <h3>Current Turn</h3>
+
+                <div className="state-grid">
+                  <p>Index: {currentTurn.current_turn_index ?? "None"}</p>
+                  <p>Player: {currentTurn.current_player ?? "None"}</p>
+                </div>
+              </section>
+          )}
+
           {selectedTable && (
               <section>
                 <div className="table-box">
@@ -664,6 +720,17 @@ function App() {
                     <p>
                       <strong>Last action:</strong> {formatTimestamp(selectedTable.last_action_at)}
                     </p>
+
+                    <p>
+                      <strong>Round:</strong> {selectedTable.round_number}
+                    </p>
+
+                    <p>
+                      <strong>Next round votes:</strong>{" "}
+                      {selectedTable.status === "Finished"
+                          ? `${selectedTable.next_round_votes.length} / ${selectedTable.players.length}`
+                          : "N/A"}
+                    </p>
                   </div>
 
                   <div className="card-zone">
@@ -693,6 +760,25 @@ function App() {
                         <p>Connect wallet to view your cards.</p>
                     )}
                   </div>
+
+                  {revealedCards && (
+                      <div className="card-zone">
+                        <h4>Revealed Cards</h4>
+
+                        {revealedCards.map((hand) => (
+                            <div key={hand.player_id} className="revealed-hand">
+                              <p>
+                                <strong>{hand.player_id}</strong>
+                                {hand.player_id === accountId ? " (you)" : ""}
+                              </p>
+
+                              <div className="cards-row">
+                                {hand.cards.map(renderCard)}
+                              </div>
+                            </div>
+                        ))}
+                      </div>
+                  )}
 
                   <div className="players-box">
                     <h4>Players</h4>
@@ -752,58 +838,6 @@ function App() {
                         </p>
                     )}
                   </div>
-                </div>
-              </section>
-          )}
-
-          {accountId && (
-              <section>
-                <h3>Your Contract State</h3>
-
-                <p>
-                  Selected-table balance:{" "}
-                  {playerBalance ? formatNear(playerBalance) : "No balance loaded"}
-                </p>
-
-                <p>
-                  Pending withdrawal:{" "}
-                  {pendingWithdrawal
-                      ? `${formatNear(pendingWithdrawal.amount)} from table #${pendingWithdrawal.table_id}`
-                      : "None"}
-                </p>
-              </section>
-          )}
-
-          {gameState && (
-              <section>
-                <h3>Game State</h3>
-
-                <div className="state-grid">
-                  <p>Status: {gameState.status}</p>
-                  <p>Current player: {gameState.current_player ?? "None"}</p>
-                  <p>Pot: {formatNear(gameState.pot)}</p>
-                  <p>Community cards: {gameState.community_cards.length}</p>
-                  <p>Remaining deck: {gameState.remaining_deck_count}</p>
-                  <p>Last action: {formatTimestamp(gameState.last_action_at)}</p>
-                </div>
-
-                {gameState.round_result && (
-                    <div className="result-box">
-                      <p>Winner: {gameState.round_result.winner_id}</p>
-                      <p>Pot awarded: {formatNear(gameState.round_result.pot_awarded)}</p>
-                      <p>Resolved at: {formatTimestamp(gameState.round_result.resolved_at)}</p>
-                    </div>
-                )}
-              </section>
-          )}
-
-          {currentTurn && (
-              <section>
-                <h3>Current Turn</h3>
-
-                <div className="state-grid">
-                  <p>Index: {currentTurn.current_turn_index ?? "None"}</p>
-                  <p>Player: {currentTurn.current_player ?? "None"}</p>
                 </div>
               </section>
           )}
@@ -958,6 +992,35 @@ function App() {
                 >
                   Submit Action
                 </button>
+              </div>
+
+              <div className="form-card">
+                <h3>Play Next Round</h3>
+
+                <label>
+                  Table ID
+                  <input
+                      value={nextRoundTableId}
+                      onChange={(event) => setNextRoundTableId(event.target.value)}
+                      placeholder="0"
+                  />
+                </label>
+
+                <button
+                    onClick={handleVoteNextRound}
+                    disabled={
+                        !accountId ||
+                        isSendingTx ||
+                        selectedTable?.status !== "Finished" ||
+                        !selectedTable?.players.includes(accountId)
+                    }
+                >
+                  Play Next Round
+                </button>
+
+                <p className="hint">
+                  Both players must click this after the round is finished.
+                </p>
               </div>
 
               <div className="form-card">
