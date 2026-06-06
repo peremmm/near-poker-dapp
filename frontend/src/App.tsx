@@ -59,9 +59,6 @@ function App() {
   const [actionType, setActionType] = useState("Check");
   const [raiseAmountNear, setRaiseAmountNear] = useState("0.1");
 
-  const [resolveTableId, setResolveTableId] = useState("");
-  const [winnerId, setWinnerId] = useState("");
-
   const [timeoutTableId, setTimeoutTableId] = useState("");
   const [withdrawTableId, setWithdrawTableId] = useState("");
 
@@ -69,7 +66,6 @@ function App() {
   const [txError, setTxError] = useState<string | null>(null);
   const [isSendingTx, setIsSendingTx] = useState(false);
 
-  const [advanceStageTableId, setAdvanceStageTableId] = useState("");
   const [myCards, setMyCards] = useState<{ rank: string; suit: string }[]>([]);
   const [revealedCards, setRevealedCards] = useState<PlayerCards[] | null>(null);
   const [nextRoundTableId, setNextRoundTableId] = useState("");
@@ -172,10 +168,8 @@ function App() {
 
       setSelectedTableId(String(tableId));
       setActionTableId(String(tableId));
-      setResolveTableId(String(tableId));
       setTimeoutTableId(String(tableId));
       setWithdrawTableId(String(tableId));
-      setAdvanceStageTableId(String(tableId));
 
       setSelectedTable(table);
       setGameState(state);
@@ -327,26 +321,6 @@ function App() {
     });
   }
 
-  async function handleResolveRound() {
-    await runTransaction("Resolve round", async () => {
-      const walletSelector = requireWalletSelector();
-      const tableId = Number(resolveTableId);
-
-      if (!Number.isInteger(tableId) || tableId < 0) {
-        throw new Error("Enter a valid table ID");
-      }
-
-      if (!winnerId.trim()) {
-        throw new Error("Enter winner account ID");
-      }
-
-      await callChangeMethod(walletSelector, "resolve_round", {
-        table_id: tableId,
-        winner_id: winnerId.trim(),
-      });
-    });
-  }
-
   async function handleClaimTimeoutRefund() {
     await runTransaction("Claim timeout refund", async () => {
       const walletSelector = requireWalletSelector();
@@ -458,21 +432,6 @@ function App() {
           <span className="card-suit">{suitSymbol(card.suit)}</span>
         </div>
     );
-  }
-
-  async function handleAdvanceStage() {
-    await runTransaction("Advance stage", async () => {
-      const walletSelector = requireWalletSelector();
-      const tableId = Number(advanceStageTableId);
-
-      if (!Number.isInteger(tableId) || tableId < 0) {
-        throw new Error("Enter a valid table ID");
-      }
-
-      await callChangeMethod(walletSelector, "advance_stage", {
-        table_id: tableId,
-      });
-    });
   }
 
   function getActionHint(): string {
@@ -1028,63 +987,6 @@ function App() {
 
                 <p className="hint">
                   Both players must click this after the round is finished.
-                </p>
-              </div>
-
-              <div className="form-card">
-                <h3>Advance Stage</h3>
-
-                <label>
-                  Table ID
-                  <input
-                      value={advanceStageTableId}
-                      onChange={(event) => setAdvanceStageTableId(event.target.value)}
-                      placeholder="0"
-                  />
-                </label>
-
-                <button
-                    onClick={handleAdvanceStage}
-                    disabled={!accountId || isSendingTx}
-                >
-                  Advance Stage
-                </button>
-
-                <p className="hint">
-                  PreFlop → Flop → Turn → River → Showdown.
-                </p>
-              </div>
-
-              <div className="form-card">
-                <h3>Resolve Round</h3>
-
-                <label>
-                  Table ID
-                  <input
-                      value={resolveTableId}
-                      onChange={(event) => setResolveTableId(event.target.value)}
-                      placeholder="0"
-                  />
-                </label>
-
-                <label>
-                  Winner Account ID
-                  <input
-                      value={winnerId}
-                      onChange={(event) => setWinnerId(event.target.value)}
-                      placeholder="winner.testnet"
-                  />
-                </label>
-
-                <button
-                    onClick={handleResolveRound}
-                    disabled={!accountId || isSendingTx}
-                >
-                  Resolve Round
-                </button>
-
-                <p className="hint">
-                  Owner only. For now, this is the proof-of-concept winner resolver.
                 </p>
               </div>
 

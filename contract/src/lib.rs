@@ -311,6 +311,14 @@ impl Contract {
         self.max_buy_in = max_buy_in;
     }
 
+    /// Development/testnet-only reset helper.
+    ///
+    /// During development, the `Table` struct changed several times. Since NEAR
+    /// stores contract state using Borsh serialization, old table records may fail
+    /// to deserialize after a schema change. This helper moves the table collection
+    /// to a fresh storage prefix and resets the table counter.
+    ///
+    /// This method is owner-only and is not part of normal gameplay.
     pub fn dev_reset_tables(&mut self) {
         self.assert_owner();
 
@@ -605,110 +613,6 @@ impl Contract {
         }
 
         table.last_action_at = Some(env::block_timestamp());
-
-        self.tables.insert(table_id, table);
-    }
-
-    pub fn advance_stage(&mut self, table_id: u64) {
-        self.assert_not_paused();
-
-        let caller_id = env::predecessor_account_id();
-
-        let mut table = self
-            .tables
-            .get(&table_id)
-            .expect("Table does not exist")
-            .clone();
-
-        assert_eq!(
-            table.status,
-            TableStatus::Active,
-            "Table is not active"
-        );
-
-        assert!(
-            table.players.contains(&caller_id) || caller_id == self.owner_id,
-            "Only table players or owner can advance stage"
-        );
-
-        match table.game_stage {
-            GameStage::PreFlop => {
-                Self::deal_community_cards(&mut table, 3);
-                table.game_stage = GameStage::Flop;
-            }
-            GameStage::Flop => {
-                Self::deal_community_cards(&mut table, 1);
-                table.game_stage = GameStage::Turn;
-            }
-            GameStage::Turn => {
-                Self::deal_community_cards(&mut table, 1);
-                table.game_stage = GameStage::River;
-            }
-            GameStage::River => {
-                table.game_stage = GameStage::Showdown;
-            }
-            GameStage::Showdown => {
-                env::panic_str("Game is already at showdown");
-            }
-            GameStage::Waiting => {
-                env::panic_str("Game has not started");
-            }
-        }
-
-        table.last_action_at = Some(env::block_timestamp());
-
-        self.tables.insert(table_id, table);
-    }
-
-    pub fn resolve_round(&mut self, table_id: u64, winner_id: AccountId) {
-        self.assert_not_paused();
-        self.assert_owner();
-
-        let mut table = self
-            .tables
-            .get(&table_id)
-            .expect("Table does not exist")
-            .clone();
-
-        assert_eq!(
-            table.status,
-            TableStatus::Active,
-            "Table is not active"
-        );
-
-        assert!(
-            table.players.contains(&winner_id),
-            "Winner must be a table player"
-        );
-
-        assert!(
-            table.round_result.is_none(),
-            "Round already resolved"
-        );
-
-        assert!(
-            table.pot > 0,
-            "Cannot resolve round with empty pot"
-        );
-
-        let pot_awarded = table.pot;
-
-        let winner_balance = table
-            .player_balances
-            .iter_mut()
-            .find(|balance| balance.player_id == winner_id)
-            .expect("Winner balance does not exist");
-
-        winner_balance.balance += pot_awarded;
-
-        table.pot = 0;
-        table.status = TableStatus::Finished;
-        table.current_turn_index = None;
-        table.round_result = Some(RoundResult {
-            winner_id,
-            pot_awarded,
-            resolved_at: env::block_timestamp(),
-        });
 
         self.tables.insert(table_id, table);
     }
@@ -2802,174 +2706,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn owner_can_resolve_round() {
-        let (mut contract, table_id, alice, _) = setup_active_table();
-        let owner = contract.get_owner();
-
-        set_context(alice.clone());
-
-        contract.submit_action(
-            table_id,
-            PlayerAction::Raise {
-                amount: U128(ONE_NEAR / 2),
-            },
-        );
-
-        set_context(owner);
-
-        contract.resolve_round(table_id, alice.clone());
-
-        let table = contract.get_table(table_id).unwrap();
-
-        assert_eq!(table.status, TableStatus::Finished);
-        assert!(table.round_result.is_some());
-        assert_eq!(table.round_result.unwrap().winner_id, alice);
-    }
-
-    #[test]
-    #[should_panic(expected = "Only owner can call this method")]
-    fn non_owner_cannot_resolve_round() {
-        let (mut contract, table_id, alice, bob) = setup_active_table();
-
-        set_context(alice.clone());
-
-        contract.submit_action(
-            table_id,
-            PlayerAction::Raise {
-                amount: U128(ONE_NEAR / 2),
-            },
-        );
-
-        set_context(bob);
-
-        contract.resolve_round(table_id, alice);
-    }
-
-    #[test]
-    fn winner_balance_increases_by_pot() {
-        let (mut contract, table_id, alice, _) = setup_active_table();
-        let owner = contract.get_owner();
-
-        set_context(alice.clone());
-
-        contract.submit_action(
-            table_id,
-            PlayerAction::Raise {
-                amount: U128(ONE_NEAR / 2),
-            },
-        );
-
-        let before_resolution = contract.get_table(table_id).unwrap();
-
-        assert_eq!(
-            get_player_balance(&before_resolution, &alice),
-            ONE_NEAR * 2 - SMALL_BLIND - ONE_NEAR / 2
-        );
-
-        set_context(owner);
-
-        contract.resolve_round(table_id, alice.clone());
-
-        let after_resolution = contract.get_table(table_id).unwrap();
-
-        assert_eq!(
-            get_player_balance(&after_resolution, &alice),
-            ONE_NEAR * 2 + BIG_BLIND
-        );
-    }
-
-    #[test]
-    fn pot_resets_after_resolution() {
-        let (mut contract, table_id, alice, _) = setup_active_table();
-        let owner = contract.get_owner();
-
-        set_context(alice.clone());
-
-        contract.submit_action(
-            table_id,
-            PlayerAction::Raise {
-                amount: U128(ONE_NEAR / 2),
-            },
-        );
-
-        set_context(owner);
-
-        contract.resolve_round(table_id, alice);
-
-        let table = contract.get_table(table_id).unwrap();
-
-        assert_eq!(table.pot, 0);
-    }
-
-    #[test]
-    #[should_panic(expected = "Winner must be a table player")]
-    fn cannot_resolve_with_non_player_winner() {
-        let (mut contract, table_id, alice, _) = setup_active_table();
-        let owner = contract.get_owner();
-        let carol = account("carol.testnet");
-
-        set_context(alice);
-
-        contract.submit_action(
-            table_id,
-            PlayerAction::Raise {
-                amount: U128(ONE_NEAR / 2),
-            },
-        );
-
-        set_context(owner);
-
-        contract.resolve_round(table_id, carol);
-    }
-
-    #[test]
-    #[should_panic(expected = "Table is not active")]
-    fn cannot_resolve_waiting_table() {
-        let owner = account("owner.testnet");
-        let alice = account("alice.testnet");
-
-        set_context(owner.clone());
-
-        let mut contract = Contract::new(
-            owner.clone(),
-            U128(ONE_NEAR),
-            U128(ONE_NEAR * 10),
-        );
-
-        set_context_with_deposit(alice.clone(), ONE_NEAR * 3);
-
-        let table_id = contract.create_table(U128(ONE_NEAR * 2));
-
-        set_context(owner);
-
-        contract.resolve_round(table_id, alice);
-    }
-
-    #[test]
-    #[should_panic(expected = "Table is not active")]
-    fn cannot_resolve_round_twice() {
-        let (mut contract, table_id, alice, _) = setup_active_table();
-        let owner = contract.get_owner();
-
-        set_context(alice.clone());
-
-        contract.submit_action(
-            table_id,
-            PlayerAction::Raise {
-                amount: U128(ONE_NEAR / 2),
-            },
-        );
-
-        set_context(owner.clone());
-
-        contract.resolve_round(table_id, alice.clone());
-
-        set_context(owner);
-
-        contract.resolve_round(table_id, alice);
-    }
-
     fn contract_account() -> AccountId {
         account("contract.testnet")
     }
@@ -2985,29 +2721,19 @@ mod tests {
         testing_env_with_promise_results(context, result);
     }
 
-    fn setup_finished_table_with_pot() -> (Contract, u64, AccountId, AccountId) {
+    fn setup_finished_table_by_fold() -> (Contract, u64, AccountId, AccountId) {
         let (mut contract, table_id, alice, bob) = setup_active_table();
-        let owner = contract.get_owner();
 
         set_context(alice.clone());
 
-        contract.submit_action(
-            table_id,
-            PlayerAction::Raise {
-                amount: U128(ONE_NEAR / 2),
-            },
-        );
-
-        set_context(owner);
-
-        contract.resolve_round(table_id, alice.clone());
+        contract.submit_action(table_id, PlayerAction::Fold);
 
         (contract, table_id, alice, bob)
     }
 
     #[test]
     fn player_can_withdraw_after_finished_round() {
-        let (mut contract, table_id, alice, _) = setup_finished_table_with_pot();
+        let (mut contract, table_id, alice, _) = setup_finished_table_by_fold();
 
         set_context(alice.clone());
 
@@ -3022,7 +2748,7 @@ mod tests {
 
     #[test]
     fn withdraw_deducts_internal_balance_before_transfer() {
-        let (mut contract, table_id, alice, _) = setup_finished_table_with_pot();
+        let (mut contract, table_id, alice, _) = setup_finished_table_by_fold();
 
         set_context(alice.clone());
 
@@ -3046,7 +2772,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "No balance available to withdraw")]
     fn cannot_withdraw_zero_balance() {
-        let (mut contract, table_id, alice, _) = setup_finished_table_with_pot();
+        let (mut contract, table_id, alice, _) = setup_finished_table_by_fold();
 
         set_context(alice.clone());
 
@@ -3070,7 +2796,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "Only table players can withdraw")]
     fn non_player_cannot_withdraw() {
-        let (mut contract, table_id, _, _) = setup_finished_table_with_pot();
+        let (mut contract, table_id, _, _) = setup_finished_table_by_fold();
         let carol = account("carol.testnet");
 
         set_context(carol);
@@ -3080,7 +2806,7 @@ mod tests {
 
     #[test]
     fn withdraw_callback_success_clears_pending_withdrawal() {
-        let (mut contract, table_id, alice, _) = setup_finished_table_with_pot();
+        let (mut contract, table_id, alice, _) = setup_finished_table_by_fold();
 
         set_context(alice.clone());
 
@@ -3102,7 +2828,7 @@ mod tests {
 
     #[test]
     fn withdraw_callback_failure_restores_balance() {
-        let (mut contract, table_id, alice, _) = setup_finished_table_with_pot();
+        let (mut contract, table_id, alice, _) = setup_finished_table_by_fold();
 
         set_context(alice.clone());
 
@@ -3329,7 +3055,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "Player already has a pending withdrawal")]
     fn pending_withdrawal_blocks_second_withdraw() {
-        let (mut contract, table_id, alice, _) = setup_finished_table_with_pot();
+        let (mut contract, table_id, alice, _) = setup_finished_table_by_fold();
 
         set_context(alice.clone());
         contract.withdraw(table_id);
@@ -3340,7 +3066,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "Pending withdrawal amount mismatch")]
     fn withdraw_callback_amount_mismatch_fails() {
-        let (mut contract, table_id, alice, _) = setup_finished_table_with_pot();
+        let (mut contract, table_id, alice, _) = setup_finished_table_by_fold();
 
         set_context(alice.clone());
         contract.withdraw(table_id);
@@ -3356,7 +3082,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "Pending withdrawal table mismatch")]
     fn withdraw_callback_table_mismatch_fails() {
-        let (mut contract, table_id, alice, _) = setup_finished_table_with_pot();
+        let (mut contract, table_id, alice, _) = setup_finished_table_by_fold();
 
         set_context(alice.clone());
         contract.withdraw(table_id);
@@ -3417,7 +3143,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "Contract is paused")]
     fn paused_contract_blocks_withdraw() {
-        let (mut contract, table_id, alice, _) = setup_finished_table_with_pot();
+        let (mut contract, table_id, alice, _) = setup_finished_table_by_fold();
         let owner = contract.get_owner();
 
         set_context(owner);
@@ -3431,7 +3157,7 @@ mod tests {
 
     #[test]
     fn failed_withdraw_callback_allows_retry() {
-        let (mut contract, table_id, alice, _) = setup_finished_table_with_pot();
+        let (mut contract, table_id, alice, _) = setup_finished_table_by_fold();
 
         set_context(alice.clone());
 
@@ -3550,113 +3276,6 @@ mod tests {
 
         assert_eq!(table.game_stage, GameStage::PreFlop);
         assert_eq!(table.community_cards.len(), 0);
-    }
-
-    #[test]
-    fn advance_stage_deals_flop() {
-        let (mut contract, table_id, alice, _) = setup_active_table();
-
-        set_context(alice);
-
-        contract.advance_stage(table_id);
-
-        let table = contract.get_table(table_id).unwrap();
-
-        assert_eq!(table.game_stage, GameStage::Flop);
-        assert_eq!(table.community_cards.len(), 3);
-        assert_eq!(table.remaining_deck_count, 45);
-    }
-
-    #[test]
-    fn advance_stage_deals_turn() {
-        let (mut contract, table_id, alice, _) = setup_active_table();
-
-        set_context(alice.clone());
-        contract.advance_stage(table_id);
-
-        set_context(alice);
-        contract.advance_stage(table_id);
-
-        let table = contract.get_table(table_id).unwrap();
-
-        assert_eq!(table.game_stage, GameStage::Turn);
-        assert_eq!(table.community_cards.len(), 4);
-        assert_eq!(table.remaining_deck_count, 44);
-    }
-
-    #[test]
-    fn advance_stage_deals_river() {
-        let (mut contract, table_id, alice, _) = setup_active_table();
-
-        set_context(alice.clone());
-        contract.advance_stage(table_id);
-
-        set_context(alice.clone());
-        contract.advance_stage(table_id);
-
-        set_context(alice);
-        contract.advance_stage(table_id);
-
-        let table = contract.get_table(table_id).unwrap();
-
-        assert_eq!(table.game_stage, GameStage::River);
-        assert_eq!(table.community_cards.len(), 5);
-        assert_eq!(table.remaining_deck_count, 43);
-    }
-
-    #[test]
-    fn advance_stage_moves_river_to_showdown_without_drawing_card() {
-        let (mut contract, table_id, alice, _) = setup_active_table();
-
-        set_context(alice.clone());
-        contract.advance_stage(table_id);
-
-        set_context(alice.clone());
-        contract.advance_stage(table_id);
-
-        set_context(alice.clone());
-        contract.advance_stage(table_id);
-
-        set_context(alice);
-        contract.advance_stage(table_id);
-
-        let table = contract.get_table(table_id).unwrap();
-
-        assert_eq!(table.game_stage, GameStage::Showdown);
-        assert_eq!(table.community_cards.len(), 5);
-        assert_eq!(table.remaining_deck_count, 43);
-    }
-
-    #[test]
-    #[should_panic(expected = "Game is already at showdown")]
-    fn cannot_advance_stage_after_showdown() {
-        let (mut contract, table_id, alice, _) = setup_active_table();
-
-        set_context(alice.clone());
-        contract.advance_stage(table_id);
-
-        set_context(alice.clone());
-        contract.advance_stage(table_id);
-
-        set_context(alice.clone());
-        contract.advance_stage(table_id);
-
-        set_context(alice.clone());
-        contract.advance_stage(table_id);
-
-        set_context(alice);
-        contract.advance_stage(table_id);
-    }
-
-    #[test]
-    #[should_panic(expected = "Only table players or owner can advance stage")]
-    fn non_player_cannot_advance_stage() {
-        let (mut contract, table_id, _, _) = setup_active_table();
-        let carol = account("carol.testnet");
-
-        set_context(carol);
-
-        contract.advance_stage(table_id);
     }
 
     #[test]
@@ -4222,7 +3841,7 @@ mod tests {
 
     #[test]
     fn player_can_vote_next_round_after_finished() {
-        let (mut contract, table_id, alice, _) = setup_finished_table_with_pot();
+        let (mut contract, table_id, alice, _) = setup_finished_table_by_fold();
 
         set_context(alice.clone());
 
@@ -4237,7 +3856,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "Player already voted for next round")]
     fn duplicate_next_round_vote_fails() {
-        let (mut contract, table_id, alice, _) = setup_finished_table_with_pot();
+        let (mut contract, table_id, alice, _) = setup_finished_table_by_fold();
 
         set_context(alice.clone());
         contract.vote_next_round(table_id);
@@ -4249,7 +3868,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "Only table players can vote for next round")]
     fn non_player_cannot_vote_next_round() {
-        let (mut contract, table_id, _, _) = setup_finished_table_with_pot();
+        let (mut contract, table_id, _, _) = setup_finished_table_by_fold();
         let carol = account("carol.testnet");
 
         set_context(carol);
@@ -4259,7 +3878,7 @@ mod tests {
 
     #[test]
     fn both_votes_start_next_round() {
-        let (mut contract, table_id, alice, bob) = setup_finished_table_with_pot();
+        let (mut contract, table_id, alice, bob) = setup_finished_table_by_fold();
 
         set_context(alice);
         contract.vote_next_round(table_id);
@@ -4279,7 +3898,7 @@ mod tests {
 
     #[test]
     fn next_round_rotates_blinds() {
-        let (mut contract, table_id, alice, bob) = setup_finished_table_with_pot();
+        let (mut contract, table_id, alice, bob) = setup_finished_table_by_fold();
 
         let before = contract.get_table(table_id).unwrap();
 
@@ -4303,7 +3922,7 @@ mod tests {
 
     #[test]
     fn next_round_clears_result_and_action_history() {
-        let (mut contract, table_id, alice, bob) = setup_finished_table_with_pot();
+        let (mut contract, table_id, alice, bob) = setup_finished_table_by_fold();
 
         let finished = contract.get_table(table_id).unwrap();
         assert!(finished.round_result.is_some());
@@ -4323,7 +3942,7 @@ mod tests {
 
     #[test]
     fn revealed_cards_available_after_finished() {
-        let (contract, table_id, _, _) = setup_finished_table_with_pot();
+        let (contract, table_id, _, _) = setup_finished_table_by_fold();
 
         let revealed = contract
             .get_revealed_cards(table_id)
