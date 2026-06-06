@@ -134,6 +134,12 @@ pub struct RoundResult {
     pub resolved_at: u64,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct PokerHandScore {
+    pub category: u8,
+    pub kickers: Vec<u8>,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[near(serializers = [borsh, json])]
 pub struct PendingWithdrawal {
@@ -1105,6 +1111,232 @@ impl Contract {
             let card = table.deck.pop().expect("Deck should contain enough cards");
             table.community_cards.push(card);
         }
+    }
+
+    fn rank_value(rank: &Rank) -> u8 {
+        match rank {
+            Rank::Two => 2,
+            Rank::Three => 3,
+            Rank::Four => 4,
+            Rank::Five => 5,
+            Rank::Six => 6,
+            Rank::Seven => 7,
+            Rank::Eight => 8,
+            Rank::Nine => 9,
+            Rank::Ten => 10,
+            Rank::Jack => 11,
+            Rank::Queen => 12,
+            Rank::King => 13,
+            Rank::Ace => 14,
+        }
+    }
+
+    fn best_hand_score(cards: &[Card]) -> PokerHandScore {
+        assert_eq!(
+            cards.len(),
+            7,
+            "Best hand evaluation requires exactly 7 cards"
+        );
+
+        let mut best_score: Option<PokerHandScore> = None;
+
+        for a in 0..cards.len() - 4 {
+            for b in a + 1..cards.len() - 3 {
+                for c in b + 1..cards.len() - 2 {
+                    for d in c + 1..cards.len() - 1 {
+                        for e in d + 1..cards.len() {
+                            let hand = vec![
+                                cards[a].clone(),
+                                cards[b].clone(),
+                                cards[c].clone(),
+                                cards[d].clone(),
+                                cards[e].clone(),
+                            ];
+
+                            let score = Self::score_five_card_hand(&hand);
+
+                            if best_score
+                                .as_ref()
+                                .map(|current| score > *current)
+                                .unwrap_or(true)
+                            {
+                                best_score = Some(score);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        best_score.expect("At least one 5-card hand should exist")
+    }
+
+    fn score_five_card_hand(cards: &[Card]) -> PokerHandScore {
+        assert_eq!(
+            cards.len(),
+            5,
+            "Five-card hand scoring requires exactly 5 cards"
+        );
+
+        let mut ranks: Vec<u8> = cards
+            .iter()
+            .map(|card| Self::rank_value(&card.rank))
+            .collect();
+
+        ranks.sort_by(|a, b| b.cmp(a));
+
+        let is_flush = cards
+            .iter()
+            .all(|card| card.suit == cards[0].suit);
+
+        let straight_high = Self::straight_high_card(&ranks);
+
+        let mut rank_counts: Vec<(u8, usize)> = Vec::new();
+
+        for rank in ranks.iter() {
+            if let Some((_, count)) = rank_counts
+                .iter_mut()
+                .find(|(existing_rank, _)| existing_rank == rank)
+            {
+                *count += 1;
+            } else {
+                rank_counts.push((*rank, 1));
+            }
+        }
+
+        rank_counts.sort_by(|a, b| {
+            b.1.cmp(&a.1)
+                .then_with(|| b.0.cmp(&a.0))
+        });
+
+        if is_flush {
+            if let Some(high) = straight_high {
+                return PokerHandScore {
+                    category: 8,
+                    kickers: vec![high],
+                };
+            }
+        }
+
+        if rank_counts[0].1 == 4 {
+            let four_rank = rank_counts[0].0;
+            let kicker = rank_counts
+                .iter()
+                .find(|(_, count)| *count == 1)
+                .map(|(rank, _)| *rank)
+                .expect("Four of a kind should have kicker");
+
+            return PokerHandScore {
+                category: 7,
+                kickers: vec![four_rank, kicker],
+            };
+        }
+
+        if rank_counts[0].1 == 3 && rank_counts[1].1 == 2 {
+            return PokerHandScore {
+                category: 6,
+                kickers: vec![rank_counts[0].0, rank_counts[1].0],
+            };
+        }
+
+        if is_flush {
+            return PokerHandScore {
+                category: 5,
+                kickers: ranks,
+            };
+        }
+
+        if let Some(high) = straight_high {
+            return PokerHandScore {
+                category: 4,
+                kickers: vec![high],
+            };
+        }
+
+        if rank_counts[0].1 == 3 {
+            let three_rank = rank_counts[0].0;
+            let mut kickers: Vec<u8> = rank_counts
+                .iter()
+                .filter(|(_, count)| *count == 1)
+                .map(|(rank, _)| *rank)
+                .collect();
+
+            kickers.sort_by(|a, b| b.cmp(a));
+
+            let mut result = vec![three_rank];
+            result.extend(kickers);
+
+            return PokerHandScore {
+                category: 3,
+                kickers: result,
+            };
+        }
+
+        if rank_counts[0].1 == 2 && rank_counts[1].1 == 2 {
+            let mut pair_ranks = vec![rank_counts[0].0, rank_counts[1].0];
+            pair_ranks.sort_by(|a, b| b.cmp(a));
+
+            let kicker = rank_counts
+                .iter()
+                .find(|(_, count)| *count == 1)
+                .map(|(rank, _)| *rank)
+                .expect("Two pair should have kicker");
+
+            let mut result = pair_ranks;
+            result.push(kicker);
+
+            return PokerHandScore {
+                category: 2,
+                kickers: result,
+            };
+        }
+
+        if rank_counts[0].1 == 2 {
+            let pair_rank = rank_counts[0].0;
+            let mut kickers: Vec<u8> = rank_counts
+                .iter()
+                .filter(|(_, count)| *count == 1)
+                .map(|(rank, _)| *rank)
+                .collect();
+
+            kickers.sort_by(|a, b| b.cmp(a));
+
+            let mut result = vec![pair_rank];
+            result.extend(kickers);
+
+            return PokerHandScore {
+                category: 1,
+                kickers: result,
+            };
+        }
+
+        PokerHandScore {
+            category: 0,
+            kickers: ranks,
+        }
+    }
+
+    fn straight_high_card(ranks_desc: &[u8]) -> Option<u8> {
+        let mut unique = ranks_desc.to_vec();
+        unique.sort();
+        unique.dedup();
+        unique.sort_by(|a, b| b.cmp(a));
+
+        if unique.contains(&14) {
+            unique.push(1);
+        }
+
+        for window in unique.windows(5) {
+            if window[0] == window[1] + 1
+                && window[1] == window[2] + 1
+                && window[2] == window[3] + 1
+                && window[3] == window[4] + 1
+            {
+                return Some(window[0]);
+            }
+        }
+
+        None
     }
 
     fn assert_owner(&self) {
@@ -2947,5 +3179,147 @@ mod tests {
         set_context(alice);
 
         contract.submit_action(table_id, PlayerAction::Fold);
+    }
+
+    fn card(rank: Rank, suit: Suit) -> Card {
+        Card { rank, suit }
+    }
+
+    #[test]
+    fn evaluator_straight_beats_pair() {
+        let straight_cards = vec![
+            card(Rank::Ten, Suit::Clubs),
+            card(Rank::Jack, Suit::Diamonds),
+            card(Rank::Queen, Suit::Hearts),
+            card(Rank::King, Suit::Spades),
+            card(Rank::Ace, Suit::Clubs),
+            card(Rank::Two, Suit::Diamonds),
+            card(Rank::Three, Suit::Hearts),
+        ];
+
+        let pair_cards = vec![
+            card(Rank::Ace, Suit::Clubs),
+            card(Rank::Ace, Suit::Diamonds),
+            card(Rank::King, Suit::Hearts),
+            card(Rank::Queen, Suit::Spades),
+            card(Rank::Nine, Suit::Clubs),
+            card(Rank::Four, Suit::Diamonds),
+            card(Rank::Two, Suit::Hearts),
+        ];
+
+        let straight_score = Contract::best_hand_score(&straight_cards);
+        let pair_score = Contract::best_hand_score(&pair_cards);
+
+        assert!(straight_score > pair_score);
+        assert_eq!(straight_score.category, 4);
+        assert_eq!(pair_score.category, 1);
+    }
+
+    #[test]
+    fn evaluator_flush_beats_straight() {
+        let flush_cards = vec![
+            card(Rank::Ace, Suit::Hearts),
+            card(Rank::Ten, Suit::Hearts),
+            card(Rank::Eight, Suit::Hearts),
+            card(Rank::Five, Suit::Hearts),
+            card(Rank::Two, Suit::Hearts),
+            card(Rank::King, Suit::Clubs),
+            card(Rank::Three, Suit::Diamonds),
+        ];
+
+        let straight_cards = vec![
+            card(Rank::Nine, Suit::Clubs),
+            card(Rank::Ten, Suit::Diamonds),
+            card(Rank::Jack, Suit::Hearts),
+            card(Rank::Queen, Suit::Spades),
+            card(Rank::King, Suit::Clubs),
+            card(Rank::Two, Suit::Diamonds),
+            card(Rank::Three, Suit::Hearts),
+        ];
+
+        let flush_score = Contract::best_hand_score(&flush_cards);
+        let straight_score = Contract::best_hand_score(&straight_cards);
+
+        assert!(flush_score > straight_score);
+        assert_eq!(flush_score.category, 5);
+        assert_eq!(straight_score.category, 4);
+    }
+
+    #[test]
+    fn evaluator_full_house_beats_flush() {
+        let full_house_cards = vec![
+            card(Rank::King, Suit::Clubs),
+            card(Rank::King, Suit::Diamonds),
+            card(Rank::King, Suit::Hearts),
+            card(Rank::Two, Suit::Spades),
+            card(Rank::Two, Suit::Clubs),
+            card(Rank::Ace, Suit::Diamonds),
+            card(Rank::Three, Suit::Hearts),
+        ];
+
+        let flush_cards = vec![
+            card(Rank::Ace, Suit::Hearts),
+            card(Rank::Ten, Suit::Hearts),
+            card(Rank::Eight, Suit::Hearts),
+            card(Rank::Five, Suit::Hearts),
+            card(Rank::Two, Suit::Hearts),
+            card(Rank::King, Suit::Clubs),
+            card(Rank::Three, Suit::Diamonds),
+        ];
+
+        let full_house_score = Contract::best_hand_score(&full_house_cards);
+        let flush_score = Contract::best_hand_score(&flush_cards);
+
+        assert!(full_house_score > flush_score);
+        assert_eq!(full_house_score.category, 6);
+        assert_eq!(flush_score.category, 5);
+    }
+
+    #[test]
+    fn evaluator_straight_flush_beats_four_of_a_kind() {
+        let straight_flush_cards = vec![
+            card(Rank::Nine, Suit::Spades),
+            card(Rank::Ten, Suit::Spades),
+            card(Rank::Jack, Suit::Spades),
+            card(Rank::Queen, Suit::Spades),
+            card(Rank::King, Suit::Spades),
+            card(Rank::Two, Suit::Clubs),
+            card(Rank::Three, Suit::Diamonds),
+        ];
+
+        let four_kind_cards = vec![
+            card(Rank::Ace, Suit::Clubs),
+            card(Rank::Ace, Suit::Diamonds),
+            card(Rank::Ace, Suit::Hearts),
+            card(Rank::Ace, Suit::Spades),
+            card(Rank::King, Suit::Clubs),
+            card(Rank::Two, Suit::Diamonds),
+            card(Rank::Three, Suit::Hearts),
+        ];
+
+        let straight_flush_score = Contract::best_hand_score(&straight_flush_cards);
+        let four_kind_score = Contract::best_hand_score(&four_kind_cards);
+
+        assert!(straight_flush_score > four_kind_score);
+        assert_eq!(straight_flush_score.category, 8);
+        assert_eq!(four_kind_score.category, 7);
+    }
+
+    #[test]
+    fn evaluator_supports_ace_low_straight() {
+        let cards = vec![
+            card(Rank::Ace, Suit::Clubs),
+            card(Rank::Two, Suit::Diamonds),
+            card(Rank::Three, Suit::Hearts),
+            card(Rank::Four, Suit::Spades),
+            card(Rank::Five, Suit::Clubs),
+            card(Rank::King, Suit::Diamonds),
+            card(Rank::Nine, Suit::Hearts),
+        ];
+
+        let score = Contract::best_hand_score(&cards);
+
+        assert_eq!(score.category, 4);
+        assert_eq!(score.kickers, vec![5]);
     }
 }
