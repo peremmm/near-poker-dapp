@@ -31,6 +31,7 @@ trait ExtSelf {
 pub enum StorageKey {
     Tables,
     TablesV2,
+    TablesV3,
     PendingWithdrawals,
 }
 
@@ -47,6 +48,17 @@ pub enum TableStatus {
     Active,
     Finished,
     Cancelled,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[near(serializers = [borsh, json])]
+pub enum GameStage {
+    Waiting,
+    PreFlop,
+    Flop,
+    Turn,
+    River,
+    Showdown,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -139,6 +151,7 @@ pub struct Table {
     pub buy_in: Balance,
     pub players: Vec<AccountId>,
     pub status: TableStatus,
+    pub game_stage: GameStage,
     pub created_at: u64,
     pub order_locked: bool,
     pub current_turn_index: Option<u8>,
@@ -164,6 +177,7 @@ pub struct TableView {
     pub buy_in: Balance,
     pub players: Vec<AccountId>,
     pub status: TableStatus,
+    pub game_stage: GameStage,
     pub created_at: u64,
     pub order_locked: bool,
     pub current_turn_index: Option<u8>,
@@ -186,6 +200,7 @@ pub struct TableView {
 pub struct GameStateView {
     pub table_id: u64,
     pub status: TableStatus,
+    pub game_stage: GameStage,
     pub players: Vec<AccountId>,
     pub current_turn_index: Option<u8>,
     pub current_player: Option<AccountId>,
@@ -273,7 +288,7 @@ impl Contract {
     pub fn dev_reset_tables(&mut self) {
         self.assert_owner();
 
-        self.tables = UnorderedMap::new(StorageKey::TablesV2);
+        self.tables = UnorderedMap::new(StorageKey::TablesV3);
         self.next_table_id = 0;
     }
 
@@ -317,6 +332,7 @@ impl Contract {
             buy_in,
             players: vec![creator_id.clone()],
             status: TableStatus::WaitingForPlayers,
+            game_stage: GameStage::Waiting,
             created_at: env::block_timestamp(),
             order_locked: false,
             current_turn_index: None,
@@ -508,6 +524,57 @@ impl Contract {
 
         table.current_turn_index =
             Some(((current_turn_index + 1) % table.players.len()) as u8);
+
+        table.last_action_at = Some(env::block_timestamp());
+
+        self.tables.insert(table_id, table);
+    }
+
+    pub fn advance_stage(&mut self, table_id: u64) {
+        self.assert_not_paused();
+
+        let caller_id = env::predecessor_account_id();
+
+        let mut table = self
+            .tables
+            .get(&table_id)
+            .expect("Table does not exist")
+            .clone();
+
+        assert_eq!(
+            table.status,
+            TableStatus::Active,
+            "Table is not active"
+        );
+
+        assert!(
+            table.players.contains(&caller_id) || caller_id == self.owner_id,
+            "Only table players or owner can advance stage"
+        );
+
+        match table.game_stage {
+            GameStage::PreFlop => {
+                Self::deal_community_cards(&mut table, 3);
+                table.game_stage = GameStage::Flop;
+            }
+            GameStage::Flop => {
+                Self::deal_community_cards(&mut table, 1);
+                table.game_stage = GameStage::Turn;
+            }
+            GameStage::Turn => {
+                Self::deal_community_cards(&mut table, 1);
+                table.game_stage = GameStage::River;
+            }
+            GameStage::River => {
+                table.game_stage = GameStage::Showdown;
+            }
+            GameStage::Showdown => {
+                env::panic_str("Game is already at showdown");
+            }
+            GameStage::Waiting => {
+                env::panic_str("Game has not started");
+            }
+        }
 
         table.last_action_at = Some(env::block_timestamp());
 
@@ -753,6 +820,7 @@ impl Contract {
             buy_in: table.buy_in,
             players: table.players.clone(),
             status: table.status.clone(),
+            game_stage: table.game_stage.clone(),
             created_at: table.created_at,
             order_locked: table.order_locked,
             current_turn_index: table.current_turn_index,
@@ -782,6 +850,7 @@ impl Contract {
                 buy_in: table.buy_in,
                 players: table.players.clone(),
                 status: table.status.clone(),
+                game_stage: table.game_stage.clone(),
                 created_at: table.created_at,
                 order_locked: table.order_locked,
                 current_turn_index: table.current_turn_index,
@@ -840,6 +909,7 @@ impl Contract {
         Some(GameStateView {
             table_id,
             status: table.status.clone(),
+            game_stage: table.game_stage.clone(),
             players: table.players.clone(),
             current_turn_index: table.current_turn_index,
             current_player,
@@ -901,6 +971,7 @@ impl Contract {
         let now = env::block_timestamp();
 
         table.status = TableStatus::Active;
+        table.game_stage = GameStage::PreFlop;
         table.order_locked = true;
         table.current_turn_index = Some(0);
         table.started_at = Some(now);
@@ -977,6 +1048,18 @@ impl Contract {
             let j = (state as usize) % (i + 1);
 
             deck.swap(i, j);
+        }
+    }
+
+    fn deal_community_cards(table: &mut Table, count: usize) {
+        assert!(
+            table.deck.len() >= count,
+            "Deck does not contain enough cards"
+        );
+
+        for _ in 0..count {
+            let card = table.deck.pop().expect("Deck should contain enough cards");
+            table.community_cards.push(card);
         }
     }
 
@@ -2395,6 +2478,7 @@ mod tests {
         assert_eq!(state.pot, SMALL_BLIND + BIG_BLIND);
         assert_eq!(state.community_cards.len(), 0);
         assert_eq!(state.remaining_deck_count, 48);
+        assert_eq!(state.game_stage, GameStage::PreFlop);
     }
 
     #[test]
@@ -2611,5 +2695,122 @@ mod tests {
             get_player_balance(&table, &bob),
             ONE_NEAR * 2 - BIG_BLIND
         );
+    }
+
+    #[test]
+    fn game_starts_at_preflop() {
+        let (contract, table_id, _, _) = setup_active_table();
+
+        let table = contract.get_table(table_id).unwrap();
+
+        assert_eq!(table.game_stage, GameStage::PreFlop);
+        assert_eq!(table.community_cards.len(), 0);
+    }
+
+    #[test]
+    fn advance_stage_deals_flop() {
+        let (mut contract, table_id, alice, _) = setup_active_table();
+
+        set_context(alice);
+
+        contract.advance_stage(table_id);
+
+        let table = contract.get_table(table_id).unwrap();
+
+        assert_eq!(table.game_stage, GameStage::Flop);
+        assert_eq!(table.community_cards.len(), 3);
+        assert_eq!(table.remaining_deck_count, 45);
+    }
+
+    #[test]
+    fn advance_stage_deals_turn() {
+        let (mut contract, table_id, alice, _) = setup_active_table();
+
+        set_context(alice.clone());
+        contract.advance_stage(table_id);
+
+        set_context(alice);
+        contract.advance_stage(table_id);
+
+        let table = contract.get_table(table_id).unwrap();
+
+        assert_eq!(table.game_stage, GameStage::Turn);
+        assert_eq!(table.community_cards.len(), 4);
+        assert_eq!(table.remaining_deck_count, 44);
+    }
+
+    #[test]
+    fn advance_stage_deals_river() {
+        let (mut contract, table_id, alice, _) = setup_active_table();
+
+        set_context(alice.clone());
+        contract.advance_stage(table_id);
+
+        set_context(alice.clone());
+        contract.advance_stage(table_id);
+
+        set_context(alice);
+        contract.advance_stage(table_id);
+
+        let table = contract.get_table(table_id).unwrap();
+
+        assert_eq!(table.game_stage, GameStage::River);
+        assert_eq!(table.community_cards.len(), 5);
+        assert_eq!(table.remaining_deck_count, 43);
+    }
+
+    #[test]
+    fn advance_stage_moves_river_to_showdown_without_drawing_card() {
+        let (mut contract, table_id, alice, _) = setup_active_table();
+
+        set_context(alice.clone());
+        contract.advance_stage(table_id);
+
+        set_context(alice.clone());
+        contract.advance_stage(table_id);
+
+        set_context(alice.clone());
+        contract.advance_stage(table_id);
+
+        set_context(alice);
+        contract.advance_stage(table_id);
+
+        let table = contract.get_table(table_id).unwrap();
+
+        assert_eq!(table.game_stage, GameStage::Showdown);
+        assert_eq!(table.community_cards.len(), 5);
+        assert_eq!(table.remaining_deck_count, 43);
+    }
+
+    #[test]
+    #[should_panic(expected = "Game is already at showdown")]
+    fn cannot_advance_stage_after_showdown() {
+        let (mut contract, table_id, alice, _) = setup_active_table();
+
+        set_context(alice.clone());
+        contract.advance_stage(table_id);
+
+        set_context(alice.clone());
+        contract.advance_stage(table_id);
+
+        set_context(alice.clone());
+        contract.advance_stage(table_id);
+
+        set_context(alice.clone());
+        contract.advance_stage(table_id);
+
+        set_context(alice);
+        contract.advance_stage(table_id);
+    }
+
+    #[test]
+    #[should_panic(expected = "Only table players or owner can advance stage")]
+    fn non_player_cannot_advance_stage() {
+        let (mut contract, table_id, _, _) = setup_active_table();
+        let carol = account("carol.testnet");
+
+        set_context(carol);
+
+        contract.advance_stage(table_id);
     }
 }

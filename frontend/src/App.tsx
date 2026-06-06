@@ -66,6 +66,8 @@ function App() {
   const [txError, setTxError] = useState<string | null>(null);
   const [isSendingTx, setIsSendingTx] = useState(false);
 
+  const [advanceStageTableId, setAdvanceStageTableId] = useState("");
+
   useEffect(() => {
     async function setup() {
       const { selector, modal } = await initWalletSelector();
@@ -165,6 +167,7 @@ function App() {
       setResolveTableId(String(tableId));
       setTimeoutTableId(String(tableId));
       setWithdrawTableId(String(tableId));
+      setAdvanceStageTableId(String(tableId));
 
       setSelectedTable(table);
       setGameState(state);
@@ -434,6 +437,21 @@ function App() {
     );
   }
 
+  async function handleAdvanceStage() {
+    await runTransaction("Advance stage", async () => {
+      const walletSelector = requireWalletSelector();
+      const tableId = Number(advanceStageTableId);
+
+      if (!Number.isInteger(tableId) || tableId < 0) {
+        throw new Error("Enter a valid table ID");
+      }
+
+      await callChangeMethod(walletSelector, "advance_stage", {
+        table_id: tableId,
+      });
+    });
+  }
+
   return (
       <main className="page">
         <section className="card">
@@ -559,6 +577,7 @@ function App() {
                           ? selectedTable.players[selectedTable.big_blind_index]
                           : "None"
                     }</p>
+                    <p>Stage: {selectedTable.game_stage}</p>
                     <p>Current turn: {currentTurn?.current_player ?? "None"}</p>
                     <p>Remaining deck: {selectedTable.remaining_deck_count}</p>
                     <p>Started: {formatTimestamp(selectedTable.started_at)}</p>
@@ -822,6 +841,30 @@ function App() {
                 >
                   Submit Action
                 </button>
+              </div>
+
+              <div className="form-card">
+                <h3>Advance Stage</h3>
+
+                <label>
+                  Table ID
+                  <input
+                      value={advanceStageTableId}
+                      onChange={(event) => setAdvanceStageTableId(event.target.value)}
+                      placeholder="0"
+                  />
+                </label>
+
+                <button
+                    onClick={handleAdvanceStage}
+                    disabled={!accountId || isSendingTx}
+                >
+                  Advance Stage
+                </button>
+
+                <p className="hint">
+                  PreFlop → Flop → Turn → River → Showdown.
+                </p>
               </div>
 
               <div className="form-card">

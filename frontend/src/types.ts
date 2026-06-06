@@ -57,6 +57,7 @@ export type TableView = {
     buy_in: Balance;
     players: string[];
     status: TableStatus;
+    game_stage: GameStage;
     created_at: number;
     order_locked: boolean;
     current_turn_index: number | null;
@@ -84,6 +85,7 @@ export type CurrentTurnView = {
 export type GameStateView = {
     table_id: number;
     status: TableStatus;
+    game_stage: GameStage;
     players: string[];
     current_turn_index: number | null;
     current_player: string | null;
@@ -93,3 +95,11 @@ export type GameStateView = {
     round_result: RoundResult | null;
     last_action_at: number | null;
 };
+
+export type GameStage =
+    | "Waiting"
+    | "PreFlop"
+    | "Flop"
+    | "Turn"
+    | "River"
+    | "Showdown";
