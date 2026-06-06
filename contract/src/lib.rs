@@ -646,6 +646,69 @@ impl Contract {
         self.tables.insert(table_id, table);
     }
 
+    pub fn resolve_round_by_evaluation(&mut self, table_id: u64) {
+        self.assert_not_paused();
+
+        let caller_id = env::predecessor_account_id();
+
+        let mut table = self
+            .tables
+            .get(&table_id)
+            .expect("Table does not exist")
+            .clone();
+
+        assert_eq!(
+            table.status,
+            TableStatus::Active,
+            "Table is not active"
+        );
+
+        assert_eq!(
+            table.game_stage,
+            GameStage::Showdown,
+            "Round can only be evaluated at showdown"
+        );
+
+        assert_eq!(
+            table.community_cards.len(),
+            5,
+            "Evaluation requires five community cards"
+        );
+
+        assert!(
+            table.players.contains(&caller_id) || caller_id == self.owner_id,
+            "Only table players or owner can resolve by evaluation"
+        );
+
+        assert_eq!(
+            table.players.len(),
+            2,
+            "Evaluation currently supports 2 players only"
+        );
+
+        let player_one = table.players[0].clone();
+        let player_two = table.players[1].clone();
+
+        let mut player_one_cards = Self::player_cards_for(&table, &player_one);
+        player_one_cards.extend(table.community_cards.clone());
+
+        let mut player_two_cards = Self::player_cards_for(&table, &player_two);
+        player_two_cards.extend(table.community_cards.clone());
+
+        let player_one_score = Self::best_hand_score(&player_one_cards);
+        let player_two_score = Self::best_hand_score(&player_two_cards);
+
+        if player_one_score > player_two_score {
+            self.award_pot_to_winner(&mut table, player_one);
+        } else if player_two_score > player_one_score {
+            self.award_pot_to_winner(&mut table, player_two);
+        } else {
+            self.split_pot_between_players(&mut table);
+        }
+
+        self.tables.insert(table_id, table);
+    }
+
     fn resolve_fold(
         &self,
         table: &mut Table,
@@ -682,6 +745,87 @@ impl Contract {
             pot_awarded,
             resolved_at: env::block_timestamp(),
         });
+    }
+
+    fn award_pot_to_winner(
+        &self,
+        table: &mut Table,
+        winner_id: AccountId,
+    ) {
+        let pot_awarded = table.pot;
+
+        let winner_balance = table
+            .player_balances
+            .iter_mut()
+            .find(|balance| balance.player_id == winner_id)
+            .expect("Winner balance does not exist");
+
+        winner_balance.balance += pot_awarded;
+
+        table.pot = 0;
+        table.status = TableStatus::Finished;
+        table.current_turn_index = None;
+        table.round_result = Some(RoundResult {
+            winner_id,
+            pot_awarded,
+            resolved_at: env::block_timestamp(),
+        });
+    }
+
+    fn split_pot_between_players(&self, table: &mut Table) {
+        assert_eq!(
+            table.players.len(),
+            2,
+            "Split pot currently supports 2 players only"
+        );
+
+        let pot_awarded = table.pot;
+        let share = pot_awarded / 2;
+        let remainder = pot_awarded % 2;
+
+        for player_id in table.players.iter() {
+            let balance = table
+                .player_balances
+                .iter_mut()
+                .find(|balance| balance.player_id == *player_id)
+                .expect("Player balance does not exist");
+
+            balance.balance += share;
+        }
+
+        if remainder > 0 {
+            let first_player = table.players[0].clone();
+
+            let first_balance = table
+                .player_balances
+                .iter_mut()
+                .find(|balance| balance.player_id == first_player)
+                .expect("First player balance does not exist");
+
+            first_balance.balance += remainder;
+        }
+
+        table.pot = 0;
+        table.status = TableStatus::Finished;
+        table.current_turn_index = None;
+        table.round_result = Some(RoundResult {
+            winner_id: "split-pot.testnet".parse().expect("Valid split pot account"),
+            pot_awarded,
+            resolved_at: env::block_timestamp(),
+        });
+    }
+
+    fn player_cards_for(
+        table: &Table,
+        player_id: &AccountId,
+    ) -> Vec<Card> {
+        table
+            .player_cards
+            .iter()
+            .find(|hand| &hand.player_id == player_id)
+            .expect("Player cards do not exist")
+            .cards
+            .clone()
     }
 
     pub fn withdraw(&mut self, table_id: u64) -> Promise {
@@ -3321,5 +3465,229 @@ mod tests {
 
         assert_eq!(score.category, 4);
         assert_eq!(score.kickers, vec![5]);
+    }
+
+    fn force_showdown_with_cards(
+        contract: &mut Contract,
+        table_id: u64,
+        player_cards: Vec<PlayerCards>,
+        community_cards: Vec<Card>,
+        pot: Balance,
+    ) {
+        let mut table = contract
+            .tables
+            .get(&table_id)
+            .expect("Table should exist")
+            .clone();
+
+        table.game_stage = GameStage::Showdown;
+        table.community_cards = community_cards;
+        table.player_cards = player_cards;
+        table.pot = pot;
+
+        contract.tables.insert(table_id, table);
+    }
+
+    #[test]
+    #[should_panic(expected = "Round can only be evaluated at showdown")]
+    fn resolve_by_evaluation_requires_showdown() {
+        let (mut contract, table_id, alice, _) = setup_active_table();
+
+        set_context(alice);
+
+        contract.resolve_round_by_evaluation(table_id);
+    }
+
+    #[test]
+    #[should_panic(expected = "Evaluation requires five community cards")]
+    fn resolve_by_evaluation_requires_five_community_cards() {
+        let (mut contract, table_id, alice, bob) = setup_active_table();
+
+        force_showdown_with_cards(
+            &mut contract,
+            table_id,
+            vec![
+                PlayerCards {
+                    player_id: alice.clone(),
+                    cards: vec![
+                        card(Rank::Ace, Suit::Spades),
+                        card(Rank::Ace, Suit::Hearts),
+                    ],
+                },
+                PlayerCards {
+                    player_id: bob.clone(),
+                    cards: vec![
+                        card(Rank::King, Suit::Spades),
+                        card(Rank::King, Suit::Hearts),
+                    ],
+                },
+            ],
+            vec![
+                card(Rank::Two, Suit::Clubs),
+                card(Rank::Three, Suit::Diamonds),
+                card(Rank::Four, Suit::Hearts),
+            ],
+            SMALL_BLIND + BIG_BLIND,
+        );
+
+        set_context(alice);
+
+        contract.resolve_round_by_evaluation(table_id);
+    }
+
+    #[test]
+    fn resolve_by_evaluation_awards_pot_to_best_hand() {
+        let (mut contract, table_id, alice, bob) = setup_active_table();
+
+        let pot = SMALL_BLIND + BIG_BLIND;
+
+        force_showdown_with_cards(
+            &mut contract,
+            table_id,
+            vec![
+                PlayerCards {
+                    player_id: alice.clone(),
+                    cards: vec![
+                        card(Rank::Ace, Suit::Spades),
+                        card(Rank::Ace, Suit::Hearts),
+                    ],
+                },
+                PlayerCards {
+                    player_id: bob.clone(),
+                    cards: vec![
+                        card(Rank::King, Suit::Spades),
+                        card(Rank::King, Suit::Hearts),
+                    ],
+                },
+            ],
+            vec![
+                card(Rank::Two, Suit::Clubs),
+                card(Rank::Three, Suit::Diamonds),
+                card(Rank::Four, Suit::Hearts),
+                card(Rank::Nine, Suit::Clubs),
+                card(Rank::Ten, Suit::Diamonds),
+            ],
+            pot,
+        );
+
+        set_context(alice.clone());
+
+        contract.resolve_round_by_evaluation(table_id);
+
+        let table = contract.get_table(table_id).unwrap();
+
+        assert_eq!(table.status, TableStatus::Finished);
+        assert_eq!(table.pot, 0);
+        assert_eq!(
+            get_player_balance(&table, &alice),
+            ONE_NEAR * 2 - SMALL_BLIND + pot
+        );
+        assert_eq!(table.round_result.unwrap().winner_id, alice);
+    }
+
+    #[test]
+    fn resolve_by_evaluation_records_round_result() {
+        let (mut contract, table_id, alice, bob) = setup_active_table();
+
+        let pot = SMALL_BLIND + BIG_BLIND;
+
+        force_showdown_with_cards(
+            &mut contract,
+            table_id,
+            vec![
+                PlayerCards {
+                    player_id: alice.clone(),
+                    cards: vec![
+                        card(Rank::Queen, Suit::Spades),
+                        card(Rank::Queen, Suit::Hearts),
+                    ],
+                },
+                PlayerCards {
+                    player_id: bob.clone(),
+                    cards: vec![
+                        card(Rank::King, Suit::Spades),
+                        card(Rank::King, Suit::Hearts),
+                    ],
+                },
+            ],
+            vec![
+                card(Rank::Two, Suit::Clubs),
+                card(Rank::Three, Suit::Diamonds),
+                card(Rank::Four, Suit::Hearts),
+                card(Rank::Nine, Suit::Clubs),
+                card(Rank::Ten, Suit::Diamonds),
+            ],
+            pot,
+        );
+
+        set_context(alice);
+
+        contract.resolve_round_by_evaluation(table_id);
+
+        let table = contract.get_table(table_id).unwrap();
+        let result = table.round_result.expect("Round result should exist");
+
+        assert_eq!(result.winner_id, bob);
+        assert_eq!(result.pot_awarded, pot);
+    }
+
+    #[test]
+    fn resolve_by_evaluation_splits_pot_on_tie() {
+        let (mut contract, table_id, alice, bob) = setup_active_table();
+
+        let pot = SMALL_BLIND + BIG_BLIND;
+
+        force_showdown_with_cards(
+            &mut contract,
+            table_id,
+            vec![
+                PlayerCards {
+                    player_id: alice.clone(),
+                    cards: vec![
+                        card(Rank::Two, Suit::Spades),
+                        card(Rank::Seven, Suit::Hearts),
+                    ],
+                },
+                PlayerCards {
+                    player_id: bob.clone(),
+                    cards: vec![
+                        card(Rank::Three, Suit::Spades),
+                        card(Rank::Eight, Suit::Hearts),
+                    ],
+                },
+            ],
+            vec![
+                card(Rank::Ace, Suit::Clubs),
+                card(Rank::King, Suit::Diamonds),
+                card(Rank::Queen, Suit::Hearts),
+                card(Rank::Jack, Suit::Spades),
+                card(Rank::Ten, Suit::Clubs),
+            ],
+            pot,
+        );
+
+        set_context(alice.clone());
+
+        contract.resolve_round_by_evaluation(table_id);
+
+        let table = contract.get_table(table_id).unwrap();
+
+        assert_eq!(table.status, TableStatus::Finished);
+        assert_eq!(table.pot, 0);
+
+        assert_eq!(
+            get_player_balance(&table, &alice),
+            ONE_NEAR * 2 - SMALL_BLIND + pot / 2
+        );
+
+        assert_eq!(
+            get_player_balance(&table, &bob),
+            ONE_NEAR * 2 - BIG_BLIND + pot / 2
+        );
+
+        assert_eq!(
+            table.round_result.unwrap().winner_id,
+            "split-pot.testnet".parse::<AccountId>().unwrap()
+        );
     }
 }
