@@ -32,6 +32,7 @@ pub enum StorageKey {
     Tables,
     TablesV2,
     TablesV3,
+    TablesV4,
     PendingWithdrawals,
 }
 
@@ -306,7 +307,7 @@ impl Contract {
     pub fn dev_reset_tables(&mut self) {
         self.assert_owner();
 
-        self.tables = UnorderedMap::new(StorageKey::TablesV3);
+        self.tables = UnorderedMap::new(StorageKey::TablesV4);
         self.next_table_id = 0;
     }
 

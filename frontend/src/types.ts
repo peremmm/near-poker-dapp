@@ -68,6 +68,8 @@ export type TableView = {
     action_history: ActionRecord[];
     pot: Balance;
     player_balances: PlayerBalance[];
+    current_bet: Balance;
+    betting_round: PlayerBetState[];
     small_blind: Balance;
     big_blind: Balance;
     small_blind_index: number | null;
@@ -102,3 +104,9 @@ export type GameStage =
     | "Turn"
     | "River"
     | "Showdown";
+
+export type PlayerBetState = {
+    player_id: string;
+    contribution: Balance;
+    has_acted: boolean;
+};

@@ -453,6 +453,50 @@ function App() {
     });
   }
 
+  function getActionHint(): string {
+    if (!selectedTable || !currentTurn || !accountId) {
+      return "Load a table to see available actions.";
+    }
+
+    if (selectedTable.status !== "Active") {
+      return "This table is not active.";
+    }
+
+    if (currentTurn.current_player !== accountId) {
+      return `Waiting for ${currentTurn.current_player ?? "another player"} to act.`;
+    }
+
+    if (selectedTable.game_stage === "PreFlop") {
+      const myBetState = selectedTable.betting_round.find(
+          (state) => state.player_id === accountId,
+      );
+
+      if (myBetState && BigInt(myBetState.contribution) < BigInt(selectedTable.current_bet)) {
+        return "You are facing a bet. Choose Call, Raise, or Fold.";
+      }
+    }
+
+    if (BigInt(selectedTable.current_bet) === 0n) {
+      return "No active bet. You can Check, Raise, or Fold.";
+    }
+
+    return "Choose a valid action for your turn.";
+  }
+
+  function getRoundResultLabel(): string {
+    if (!selectedTable?.round_result) {
+      return "No result yet.";
+    }
+
+    if (selectedTable.round_result.winner_id === "split-pot.testnet") {
+      return `Split pot: ${formatNear(selectedTable.round_result.pot_awarded)}`;
+    }
+
+    return `Winner: ${selectedTable.round_result.winner_id} — Pot awarded: ${formatNear(
+        selectedTable.round_result.pot_awarded,
+    )}`;
+  }
+
   return (
       <main className="page">
         <section className="card">
@@ -564,25 +608,62 @@ function App() {
                   </div>
 
                   <div className="table-info-grid">
-                    <p>Creator: {selectedTable.creator_id}</p>
-                    <p>Buy-in: {formatNear(selectedTable.buy_in)}</p>
-                    <p>Small blind: {formatNear(selectedTable.small_blind)}</p>
-                    <p>Big blind: {formatNear(selectedTable.big_blind)}</p>
-                    <p>Small blind player: {
-                      selectedTable.small_blind_index !== null
+                    <p>
+                      <strong>Creator:</strong> {selectedTable.creator_id}
+                    </p>
+
+                    <p>
+                      <strong>Buy-in:</strong> {formatNear(selectedTable.buy_in)}
+                    </p>
+
+                    <p>
+                      <strong>Stage:</strong> {selectedTable.game_stage}
+                    </p>
+
+                    <p>
+                      <strong>Current turn:</strong>{" "}
+                      {currentTurn?.current_player
+                          ? `${currentTurn.current_player}${currentTurn.current_player === accountId ? " (you)" : ""}`
+                          : "None"}
+                    </p>
+
+                    <p>
+                      <strong>Current bet:</strong> {formatNear(selectedTable.current_bet)}
+                    </p>
+
+                    <p>
+                      <strong>Remaining deck:</strong> {selectedTable.remaining_deck_count}
+                    </p>
+
+                    <p>
+                      <strong>Small blind:</strong> {formatNear(selectedTable.small_blind)}
+                    </p>
+
+                    <p>
+                      <strong>Big blind:</strong> {formatNear(selectedTable.big_blind)}
+                    </p>
+
+                    <p>
+                      <strong>Small blind player:</strong>{" "}
+                      {selectedTable.small_blind_index !== null
                           ? selectedTable.players[selectedTable.small_blind_index]
-                          : "None"
-                    }</p>
-                    <p>Big blind player: {
-                      selectedTable.big_blind_index !== null
+                          : "None"}
+                    </p>
+
+                    <p>
+                      <strong>Big blind player:</strong>{" "}
+                      {selectedTable.big_blind_index !== null
                           ? selectedTable.players[selectedTable.big_blind_index]
-                          : "None"
-                    }</p>
-                    <p>Stage: {selectedTable.game_stage}</p>
-                    <p>Current turn: {currentTurn?.current_player ?? "None"}</p>
-                    <p>Remaining deck: {selectedTable.remaining_deck_count}</p>
-                    <p>Started: {formatTimestamp(selectedTable.started_at)}</p>
-                    <p>Last action: {formatTimestamp(selectedTable.last_action_at)}</p>
+                          : "None"}
+                    </p>
+
+                    <p>
+                      <strong>Started:</strong> {formatTimestamp(selectedTable.started_at)}
+                    </p>
+
+                    <p>
+                      <strong>Last action:</strong> {formatTimestamp(selectedTable.last_action_at)}
+                    </p>
                   </div>
 
                   <div className="card-zone">
@@ -626,6 +707,25 @@ function App() {
                     </ul>
                   </div>
 
+                  <div className="betting-box">
+                    <h4>Current Betting Round</h4>
+
+                    {selectedTable.betting_round.length === 0 ? (
+                        <p>No betting round state yet.</p>
+                    ) : (
+                        <ul>
+                          {selectedTable.betting_round.map((state) => (
+                              <li key={state.player_id}>
+                                {state.player_id}
+                                {state.player_id === accountId ? " (you)" : ""}: contributed{" "}
+                                {formatNear(state.contribution)} —{" "}
+                                {state.has_acted ? "acted" : "waiting"}
+                              </li>
+                          ))}
+                        </ul>
+                    )}
+                  </div>
+
                   <div className="balances-box">
                     <h4>Player Balances</h4>
 
@@ -639,6 +739,17 @@ function App() {
                               </li>
                           ))}
                         </ul>
+                    )}
+                  </div>
+                  <div className="round-result-box">
+                    <h4>Round Result</h4>
+
+                    <p>{getRoundResultLabel()}</p>
+
+                    {selectedTable.round_result && (
+                        <p>
+                          Resolved at: {formatTimestamp(selectedTable.round_result.resolved_at)}
+                        </p>
                     )}
                   </div>
                 </div>
@@ -802,7 +913,7 @@ function App() {
 
               <div className="form-card">
                 <h3>Submit Action</h3>
-
+                <p className="hint strong-hint">{getActionHint()}</p>
                 <label>
                   Table ID
                   <input
@@ -838,7 +949,12 @@ function App() {
 
                 <button
                     onClick={handleSubmitAction}
-                    disabled={!accountId || isSendingTx}
+                    disabled={
+                        !accountId ||
+                        isSendingTx ||
+                        selectedTable?.status !== "Active" ||
+                        currentTurn?.current_player !== accountId
+                    }
                 >
                   Submit Action
                 </button>
@@ -921,7 +1037,7 @@ function App() {
                 </button>
 
                 <p className="hint">
-                  Available after the active table timeout has passed.
+                  Available after the active table timeout has passed. (10 minutes after last action)
                 </p>
               </div>
 

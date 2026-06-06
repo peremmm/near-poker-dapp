@@ -243,3 +243,33 @@ select {
   background: #e8fff0;
   border: 1px solid #b7efca;
 }
+
+.round-result-box,
+.betting-box {
+  margin-top: 18px;
+  padding: 14px;
+  border-radius: 12px;
+  background: white;
+  border: 1px solid #eee;
+}
+
+.round-result-box h4,
+.betting-box h4 {
+  margin-top: 0;
+}
+
+.strong-hint {
+  padding: 10px;
+  border-radius: 10px;
+  background: #fff6d8;
+  color: #6b4b00;
+  border: 1px solid #f1d47a;
+}
+
+.table-info-grid strong {
+  font-weight: 700;
+}
+
+.form-card button:disabled {
+  background: #888;
+}
