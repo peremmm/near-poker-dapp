@@ -63,7 +63,6 @@ export type TableView = {
     current_turn_index: number | null;
     started_at: number | null;
     last_action_at: number | null;
-    player_cards: PlayerCards[];
     community_cards: Card[];
     remaining_deck_count: number;
     action_history: ActionRecord[];

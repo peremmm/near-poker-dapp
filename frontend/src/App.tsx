@@ -8,6 +8,7 @@ import {
   getBuyInRange,
   getCurrentTurn,
   getGameState,
+  getMyCards,
   getOpenTables,
   getPendingWithdrawal,
   getPlayerBalance,
@@ -67,6 +68,7 @@ function App() {
   const [isSendingTx, setIsSendingTx] = useState(false);
 
   const [advanceStageTableId, setAdvanceStageTableId] = useState("");
+  const [myCards, setMyCards] = useState<{ rank: string; suit: string }[]>([]);
 
   useEffect(() => {
     async function setup() {
@@ -135,6 +137,7 @@ function App() {
         setPendingWithdrawal(pending);
       } else {
         setPendingWithdrawal(null);
+        setMyCards([]);
       }
     } catch (error) {
       console.error(error);
@@ -174,10 +177,16 @@ function App() {
       setCurrentTurn(turn);
 
       if (accountId) {
-        const balance = await getPlayerBalance(tableId, accountId);
+        const [balance, cards] = await Promise.all([
+          getPlayerBalance(tableId, accountId),
+          getMyCards(tableId, accountId),
+        ]);
+
         setPlayerBalance(balance);
+        setMyCards(cards ?? []);
       } else {
         setPlayerBalance(null);
+        setMyCards([]);
       }
     } catch (error) {
       console.error(error);
@@ -414,15 +423,7 @@ function App() {
   }
 
   function getOwnCards() {
-    if (!selectedTable || !accountId) {
-      return [];
-    }
-
-    const ownHand = selectedTable.player_cards.find(
-        (hand) => hand.player_id === accountId,
-    );
-
-    return ownHand?.cards ?? [];
+    return myCards;
   }
 
   function renderCard(card: { rank: string; suit: string }, index: number) {

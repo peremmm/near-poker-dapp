@@ -3,6 +3,7 @@ import { providers } from "near-api-js";
 import { nearConfig } from "./near-config";
 import type {
     BuyInRangeView,
+    Card,
     CurrentTurnView,
     GameStateView,
     PendingWithdrawal,
@@ -75,6 +76,16 @@ export function getPendingWithdrawal(
     playerId: string,
 ): Promise<PendingWithdrawal | null> {
     return viewFunction<PendingWithdrawal | null>("get_pending_withdrawal", {
+        player_id: playerId,
+    });
+}
+
+export function getMyCards(
+    tableId: number,
+    playerId: string,
+): Promise<Card[] | null> {
+    return viewFunction<Card[] | null>("get_my_cards", {
+        table_id: tableId,
         player_id: playerId,
     });
 }

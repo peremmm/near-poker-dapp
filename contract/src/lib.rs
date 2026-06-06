@@ -199,7 +199,6 @@ pub struct TableView {
     pub current_turn_index: Option<u8>,
     pub started_at: Option<u64>,
     pub last_action_at: Option<u64>,
-    pub player_cards: Vec<PlayerCards>,
     pub community_cards: Vec<Card>,
     pub remaining_deck_count: usize,
     pub action_history: Vec<ActionRecord>,
@@ -1035,7 +1034,6 @@ impl Contract {
             current_turn_index: table.current_turn_index,
             started_at: table.started_at,
             last_action_at: table.last_action_at,
-            player_cards: table.player_cards.clone(),
             community_cards: table.community_cards.clone(),
             remaining_deck_count: table.deck.len(),
             action_history: table.action_history.clone(),
@@ -1067,7 +1065,6 @@ impl Contract {
                 current_turn_index: table.current_turn_index,
                 started_at: table.started_at,
                 last_action_at: table.last_action_at,
-                player_cards: table.player_cards.clone(),
                 community_cards: table.community_cards.clone(),
                 remaining_deck_count: table.deck.len(),
                 action_history: table.action_history.clone(),
@@ -1082,6 +1079,20 @@ impl Contract {
                 round_result: table.round_result.clone(),
             })
             .collect()
+    }
+
+    pub fn get_my_cards(&self, table_id: u64, player_id: AccountId) -> Option<Vec<Card>> {
+        let table = self.tables.get(&table_id)?;
+
+        if !table.players.contains(&player_id) {
+            return None;
+        }
+
+        table
+            .player_cards
+            .iter()
+            .find(|hand| hand.player_id == player_id)
+            .map(|hand| hand.cards.clone())
     }
 
     pub fn get_player_balance(
@@ -2242,7 +2253,11 @@ mod tests {
 
         set_context(owner.clone());
 
-        let mut contract = Contract::new(owner, U128(ONE_NEAR), U128(ONE_NEAR * 10));
+        let mut contract = Contract::new(
+            owner,
+            U128(ONE_NEAR),
+            U128(ONE_NEAR * 10),
+        );
 
         set_context_with_deposit(alice.clone(), ONE_NEAR * 3);
 
@@ -2252,16 +2267,21 @@ mod tests {
 
         contract.join_table(table_id);
 
+        let alice_cards = contract
+            .get_my_cards(table_id, alice.clone())
+            .expect("Alice cards should exist");
+
+        let bob_cards = contract
+            .get_my_cards(table_id, bob.clone())
+            .expect("Bob cards should exist");
+
+        assert_eq!(alice_cards.len(), 2);
+        assert_eq!(bob_cards.len(), 2);
+
         let table = contract.get_table(table_id).unwrap();
 
-        assert_eq!(table.player_cards.len(), 2);
-
-        for hand in table.player_cards.iter() {
-            assert_eq!(hand.cards.len(), 2);
-        }
-
-        assert_eq!(table.player_cards[0].player_id, alice);
-        assert_eq!(table.player_cards[1].player_id, bob);
+        assert_eq!(table.players[0], alice);
+        assert_eq!(table.players[1], bob);
     }
 
     #[test]
@@ -2272,28 +2292,38 @@ mod tests {
 
         set_context(owner.clone());
 
-        let mut contract = Contract::new(owner, U128(ONE_NEAR), U128(ONE_NEAR * 10));
+        let mut contract = Contract::new(
+            owner,
+            U128(ONE_NEAR),
+            U128(ONE_NEAR * 10),
+        );
 
-        set_context_with_deposit(alice, ONE_NEAR * 3);
+        set_context_with_deposit(alice.clone(), ONE_NEAR * 3);
 
         let table_id = contract.create_table(U128(ONE_NEAR * 2));
 
-        set_context_with_deposit(bob, ONE_NEAR * 3);
+        set_context_with_deposit(bob.clone(), ONE_NEAR * 3);
 
         contract.join_table(table_id);
 
-        let table = contract.get_table(table_id).unwrap();
+        let alice_cards = contract
+            .get_my_cards(table_id, alice)
+            .expect("Alice cards should exist");
+
+        let bob_cards = contract
+            .get_my_cards(table_id, bob)
+            .expect("Bob cards should exist");
 
         let mut seen_cards = HashSet::new();
 
-        for hand in table.player_cards.iter() {
-            for card in hand.cards.iter() {
-                assert!(
-                    seen_cards.insert(card.clone()),
-                    "Duplicate card was dealt"
-                );
-            }
+        for card in alice_cards.iter().chain(bob_cards.iter()) {
+            assert!(
+                seen_cards.insert(card.clone()),
+                "Duplicate card was dealt"
+            );
         }
+
+        assert_eq!(seen_cards.len(), 4);
     }
 
     #[test]
@@ -3980,5 +4010,32 @@ mod tests {
         let table = contract.get_table(table_id).unwrap();
 
         assert_eq!(get_player_balance(&table, &bob), 0);
+    }
+
+    #[test]
+    fn get_my_cards_returns_only_requested_players_cards() {
+        let (contract, table_id, alice, bob) = setup_active_table();
+
+        let alice_cards = contract
+            .get_my_cards(table_id, alice.clone())
+            .expect("Alice cards should exist");
+
+        let bob_cards = contract
+            .get_my_cards(table_id, bob.clone())
+            .expect("Bob cards should exist");
+
+        assert_eq!(alice_cards.len(), 2);
+        assert_eq!(bob_cards.len(), 2);
+        assert_ne!(alice_cards, bob_cards);
+    }
+
+    #[test]
+    fn get_my_cards_returns_none_for_non_player() {
+        let (contract, table_id, _, _) = setup_active_table();
+        let carol = account("carol.testnet");
+
+        let cards = contract.get_my_cards(table_id, carol);
+
+        assert_eq!(cards, None);
     }
 }
