@@ -68,6 +68,10 @@ export type TableView = {
     action_history: ActionRecord[];
     pot: Balance;
     player_balances: PlayerBalance[];
+    small_blind: Balance;
+    big_blind: Balance;
+    small_blind_index: number | null;
+    big_blind_index: number | null;
     round_result: RoundResult | null;
 };
 

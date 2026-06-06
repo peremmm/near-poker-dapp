@@ -10,7 +10,7 @@ import type {
 } from "./types";
 
 const provider = new providers.JsonRpcProvider({
-    url: "https://rpc.testnet.near.org",
+    url: nearConfig.rpcUrl,
 });
 
 async function viewFunction<T>(

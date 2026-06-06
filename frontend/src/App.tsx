@@ -547,6 +547,18 @@ function App() {
                   <div className="table-info-grid">
                     <p>Creator: {selectedTable.creator_id}</p>
                     <p>Buy-in: {formatNear(selectedTable.buy_in)}</p>
+                    <p>Small blind: {formatNear(selectedTable.small_blind)}</p>
+                    <p>Big blind: {formatNear(selectedTable.big_blind)}</p>
+                    <p>Small blind player: {
+                      selectedTable.small_blind_index !== null
+                          ? selectedTable.players[selectedTable.small_blind_index]
+                          : "None"
+                    }</p>
+                    <p>Big blind player: {
+                      selectedTable.big_blind_index !== null
+                          ? selectedTable.players[selectedTable.big_blind_index]
+                          : "None"
+                    }</p>
                     <p>Current turn: {currentTurn?.current_player ?? "None"}</p>
                     <p>Remaining deck: {selectedTable.remaining_deck_count}</p>
                     <p>Started: {formatTimestamp(selectedTable.started_at)}</p>
