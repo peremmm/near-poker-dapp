@@ -111,6 +111,14 @@ pub struct PlayerBalance {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[near(serializers = [borsh, json])]
+pub struct PlayerBetState {
+    pub player_id: AccountId,
+    pub contribution: Balance,
+    pub has_acted: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[near(serializers = [borsh, json])]
 pub enum PlayerAction {
     Check,
     Call,
@@ -168,7 +176,9 @@ pub struct Table {
     pub community_cards: Vec<Card>,
     pub action_history: Vec<ActionRecord>,
     pub pot: Balance,
+    pub current_bet: Balance,
     pub player_balances: Vec<PlayerBalance>,
+    pub betting_round: Vec<PlayerBetState>,
     pub small_blind: Balance,
     pub big_blind: Balance,
     pub small_blind_index: Option<u8>,
@@ -194,7 +204,9 @@ pub struct TableView {
     pub remaining_deck_count: usize,
     pub action_history: Vec<ActionRecord>,
     pub pot: Balance,
+    pub current_bet: Balance,
     pub player_balances: Vec<PlayerBalance>,
+    pub betting_round: Vec<PlayerBetState>,
     pub small_blind: Balance,
     pub big_blind: Balance,
     pub small_blind_index: Option<u8>,
@@ -211,6 +223,7 @@ pub struct GameStateView {
     pub current_turn_index: Option<u8>,
     pub current_player: Option<AccountId>,
     pub pot: Balance,
+    pub current_bet: Balance,
     pub community_cards: Vec<Card>,
     pub remaining_deck_count: usize,
     pub round_result: Option<RoundResult>,
@@ -349,7 +362,9 @@ impl Contract {
             community_cards: Vec::new(),
             action_history: Vec::new(),
             pot: 0,
+            current_bet: 0,
             player_balances: Vec::new(),
+            betting_round: Vec::new(),
             small_blind: SMALL_BLIND,
             big_blind: BIG_BLIND,
             small_blind_index: None,
@@ -507,21 +522,61 @@ impl Contract {
 
                 assert!(amount > 0, "Raise amount must be greater than zero");
 
-                let player_balance = table
-                    .player_balances
-                    .iter_mut()
-                    .find(|balance| balance.player_id == actor_id)
-                    .expect("Player balance does not exist");
+                let player_balance = Self::player_balance_mut(&mut table, &actor_id);
+
+                let actual_amount = amount.min(player_balance.balance);
+
+                assert!(actual_amount > 0, "Player has no balance to raise");
+
+                player_balance.balance -= actual_amount;
+
+                let new_contribution = {
+                    let bet_state = Self::player_bet_state_mut(&mut table, &actor_id);
+                    bet_state.contribution += actual_amount;
+                    bet_state.contribution
+                };
 
                 assert!(
-                    player_balance.balance >= amount,
-                    "Raise amount exceeds player balance"
+                    new_contribution > table.current_bet,
+                    "Raise must exceed current bet"
                 );
 
-                player_balance.balance -= amount;
-                table.pot += amount;
+                table.current_bet = new_contribution;
+                table.pot += actual_amount;
+
+                Self::reset_other_players_action_after_raise(&mut table, &actor_id);
             }
-            PlayerAction::Check | PlayerAction::Call | PlayerAction::Fold => {}
+            PlayerAction::Call => {
+                let required = Self::required_to_call(&table, &actor_id);
+
+                assert!(required > 0, "Nothing to call");
+
+                let player_balance = Self::player_balance_mut(&mut table, &actor_id);
+                let call_amount = required.min(player_balance.balance);
+
+                assert!(call_amount > 0, "Player has no balance to call");
+
+                player_balance.balance -= call_amount;
+
+                {
+                    let bet_state = Self::player_bet_state_mut(&mut table, &actor_id);
+                    bet_state.contribution += call_amount;
+                    bet_state.has_acted = true;
+                }
+
+                table.pot += call_amount;
+            }
+            PlayerAction::Check => {
+                let required = Self::required_to_call(&table, &actor_id);
+
+                assert_eq!(
+                    required, 0,
+                    "Cannot check while facing a bet"
+                );
+
+                Self::mark_player_acted(&mut table, &actor_id);
+            }
+            PlayerAction::Fold => {}
         }
 
         table.action_history.push(ActionRecord {
@@ -532,6 +587,8 @@ impl Contract {
 
         if is_fold {
             self.resolve_fold(&mut table, actor_id);
+        } else if Self::betting_round_is_settled(&table) {
+            self.advance_after_betting_round(&mut table);
         } else {
             table.current_turn_index =
                 Some(((current_turn_index + 1) % table.players.len()) as u8);
@@ -657,54 +714,12 @@ impl Contract {
             .expect("Table does not exist")
             .clone();
 
-        assert_eq!(
-            table.status,
-            TableStatus::Active,
-            "Table is not active"
-        );
-
-        assert_eq!(
-            table.game_stage,
-            GameStage::Showdown,
-            "Round can only be evaluated at showdown"
-        );
-
-        assert_eq!(
-            table.community_cards.len(),
-            5,
-            "Evaluation requires five community cards"
-        );
-
         assert!(
             table.players.contains(&caller_id) || caller_id == self.owner_id,
             "Only table players or owner can resolve by evaluation"
         );
 
-        assert_eq!(
-            table.players.len(),
-            2,
-            "Evaluation currently supports 2 players only"
-        );
-
-        let player_one = table.players[0].clone();
-        let player_two = table.players[1].clone();
-
-        let mut player_one_cards = Self::player_cards_for(&table, &player_one);
-        player_one_cards.extend(table.community_cards.clone());
-
-        let mut player_two_cards = Self::player_cards_for(&table, &player_two);
-        player_two_cards.extend(table.community_cards.clone());
-
-        let player_one_score = Self::best_hand_score(&player_one_cards);
-        let player_two_score = Self::best_hand_score(&player_two_cards);
-
-        if player_one_score > player_two_score {
-            self.award_pot_to_winner(&mut table, player_one);
-        } else if player_two_score > player_one_score {
-            self.award_pot_to_winner(&mut table, player_two);
-        } else {
-            self.split_pot_between_players(&mut table);
-        }
+        self.resolve_by_evaluation_on_table(&mut table);
 
         self.tables.insert(table_id, table);
     }
@@ -1025,6 +1040,8 @@ impl Contract {
             remaining_deck_count: table.deck.len(),
             action_history: table.action_history.clone(),
             pot: table.pot,
+            current_bet: table.current_bet,
+            betting_round: table.betting_round.clone(),
             player_balances: table.player_balances.clone(),
             small_blind: table.small_blind,
             big_blind: table.big_blind,
@@ -1055,6 +1072,8 @@ impl Contract {
                 remaining_deck_count: table.deck.len(),
                 action_history: table.action_history.clone(),
                 pot: table.pot,
+                current_bet: table.current_bet,
+                betting_round: table.betting_round.clone(),
                 player_balances: table.player_balances.clone(),
                 small_blind: table.small_blind,
                 big_blind: table.big_blind,
@@ -1108,6 +1127,7 @@ impl Contract {
             current_turn_index: table.current_turn_index,
             current_player,
             pot: table.pot,
+            current_bet: table.current_bet,
             community_cards: table.community_cards.clone(),
             remaining_deck_count: table.deck.len(),
             round_result: table.round_result.clone(),
@@ -1162,6 +1182,21 @@ impl Contract {
 
         let starting_pot = SMALL_BLIND + BIG_BLIND;
 
+        let betting_round = vec![
+            PlayerBetState {
+                player_id: table.players[small_blind_index].clone(),
+                contribution: SMALL_BLIND,
+                has_acted: false,
+            },
+            PlayerBetState {
+                player_id: table.players[big_blind_index].clone(),
+                contribution: BIG_BLIND,
+                has_acted: false,
+            },
+        ];
+
+        let starting_current_bet = BIG_BLIND;
+
         let now = env::block_timestamp();
 
         table.status = TableStatus::Active;
@@ -1174,7 +1209,9 @@ impl Contract {
         table.player_cards = player_cards;
         table.community_cards = Vec::new();
         table.pot = starting_pot;
+        table.current_bet = starting_current_bet;
         table.player_balances = player_balances;
+        table.betting_round = betting_round;
         table.small_blind = SMALL_BLIND;
         table.big_blind = BIG_BLIND;
         table.small_blind_index = Some(small_blind_index as u8);
@@ -1481,6 +1518,167 @@ impl Contract {
         }
 
         None
+    }
+
+    fn player_balance_mut<'a>(
+        table: &'a mut Table,
+        player_id: &AccountId,
+    ) -> &'a mut PlayerBalance {
+        table
+            .player_balances
+            .iter_mut()
+            .find(|balance| &balance.player_id == player_id)
+            .expect("Player balance does not exist")
+    }
+
+    fn player_bet_state_mut<'a>(
+        table: &'a mut Table,
+        player_id: &AccountId,
+    ) -> &'a mut PlayerBetState {
+        table
+            .betting_round
+            .iter_mut()
+            .find(|state| &state.player_id == player_id)
+            .expect("Player betting state does not exist")
+    }
+
+    fn player_bet_contribution(
+        table: &Table,
+        player_id: &AccountId,
+    ) -> Balance {
+        table
+            .betting_round
+            .iter()
+            .find(|state| &state.player_id == player_id)
+            .expect("Player betting state does not exist")
+            .contribution
+    }
+
+    fn required_to_call(table: &Table, player_id: &AccountId) -> Balance {
+        let contribution = Self::player_bet_contribution(table, player_id);
+
+        table.current_bet.saturating_sub(contribution)
+    }
+
+    fn mark_player_acted(table: &mut Table, player_id: &AccountId) {
+        let state = Self::player_bet_state_mut(table, player_id);
+        state.has_acted = true;
+    }
+
+    fn reset_other_players_action_after_raise(
+        table: &mut Table,
+        raiser_id: &AccountId,
+    ) {
+        for state in table.betting_round.iter_mut() {
+            state.has_acted = &state.player_id == raiser_id;
+        }
+    }
+
+    fn betting_round_is_settled(table: &Table) -> bool {
+        table.betting_round.iter().all(|state| {
+            let player_balance = table
+                .player_balances
+                .iter()
+                .find(|balance| balance.player_id == state.player_id)
+                .expect("Player balance does not exist")
+                .balance;
+
+            state.has_acted
+                && (state.contribution == table.current_bet || player_balance == 0)
+        })
+    }
+
+    fn reset_betting_round(table: &mut Table) {
+        table.current_bet = 0;
+
+        table.betting_round = table
+            .players
+            .iter()
+            .map(|player_id| PlayerBetState {
+                player_id: player_id.clone(),
+                contribution: 0,
+                has_acted: false,
+            })
+            .collect();
+    }
+
+    fn advance_after_betting_round(&self, table: &mut Table) {
+        match table.game_stage {
+            GameStage::PreFlop => {
+                Self::deal_community_cards(table, 3);
+                table.game_stage = GameStage::Flop;
+                Self::reset_betting_round(table);
+                table.current_turn_index = Some(0);
+            }
+            GameStage::Flop => {
+                Self::deal_community_cards(table, 1);
+                table.game_stage = GameStage::Turn;
+                Self::reset_betting_round(table);
+                table.current_turn_index = Some(0);
+            }
+            GameStage::Turn => {
+                Self::deal_community_cards(table, 1);
+                table.game_stage = GameStage::River;
+                Self::reset_betting_round(table);
+                table.current_turn_index = Some(0);
+            }
+            GameStage::River => {
+                table.game_stage = GameStage::Showdown;
+                self.resolve_by_evaluation_on_table(table);
+            }
+            GameStage::Showdown => {
+                self.resolve_by_evaluation_on_table(table);
+            }
+            GameStage::Waiting => {
+                env::panic_str("Game has not started");
+            }
+        }
+    }
+
+    fn resolve_by_evaluation_on_table(&self, table: &mut Table) {
+        assert_eq!(
+            table.status,
+            TableStatus::Active,
+            "Table is not active"
+        );
+
+        assert_eq!(
+            table.game_stage,
+            GameStage::Showdown,
+            "Round can only be evaluated at showdown"
+        );
+
+        assert_eq!(
+            table.community_cards.len(),
+            5,
+            "Evaluation requires five community cards"
+        );
+
+        assert_eq!(
+            table.players.len(),
+            2,
+            "Evaluation currently supports 2 players only"
+        );
+
+        let player_one = table.players[0].clone();
+        let player_two = table.players[1].clone();
+
+        let mut player_one_cards = Self::player_cards_for(table, &player_one);
+        player_one_cards.extend(table.community_cards.clone());
+
+        let mut player_two_cards = Self::player_cards_for(table, &player_two);
+        player_two_cards.extend(table.community_cards.clone());
+
+        let player_one_score = Self::best_hand_score(&player_one_cards);
+        let player_two_score = Self::best_hand_score(&player_two_cards);
+
+        if player_one_score > player_two_score {
+            self.award_pot_to_winner(table, player_one);
+        } else if player_two_score > player_one_score {
+            self.award_pot_to_winner(table, player_two);
+        } else {
+            self.split_pot_between_players(table);
+        }
     }
 
     fn assert_owner(&self) {
@@ -2170,13 +2368,13 @@ mod tests {
 
         set_context(alice.clone());
 
-        contract.submit_action(table_id, PlayerAction::Check);
+        contract.submit_action(table_id, PlayerAction::Call);
 
         let table = contract.get_table(table_id).unwrap();
 
         assert_eq!(table.action_history.len(), 1);
         assert_eq!(table.action_history[0].player_id, alice);
-        assert_eq!(table.action_history[0].action, PlayerAction::Check);
+        assert_eq!(table.action_history[0].action, PlayerAction::Call);
     }
 
     #[test]
@@ -2206,7 +2404,7 @@ mod tests {
 
         set_context(alice);
 
-        contract.submit_action(table_id, PlayerAction::Check);
+        contract.submit_action(table_id, PlayerAction::Call);
 
         let table = contract.get_table(table_id).unwrap();
 
@@ -2327,17 +2525,31 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "Raise amount exceeds player balance")]
-    fn raise_larger_than_balance_fails() {
+    fn raise_larger_than_balance_uses_remaining_balance() {
         let (mut contract, table_id, alice, _) = setup_active_table();
 
-        set_context(alice);
+        let before = contract.get_table(table_id).unwrap();
+
+        let alice_balance_before = get_player_balance(&before, &alice);
+        let pot_before = before.pot;
+
+        set_context(alice.clone());
 
         contract.submit_action(
             table_id,
             PlayerAction::Raise {
                 amount: U128(ONE_NEAR * 3),
             },
+        );
+
+        let after = contract.get_table(table_id).unwrap();
+
+        assert_eq!(get_player_balance(&after, &alice), 0);
+        assert_eq!(after.pot, pot_before + alice_balance_before);
+
+        assert_eq!(
+            after.current_bet,
+            SMALL_BLIND + alice_balance_before
         );
     }
 
@@ -2357,23 +2569,25 @@ mod tests {
     }
 
     #[test]
-    fn check_does_not_change_balance_or_pot() {
+    fn check_does_not_change_balance_or_pot_when_not_facing_bet() {
         let (mut contract, table_id, alice, bob) = setup_active_table();
 
         set_context(alice.clone());
+        contract.submit_action(table_id, PlayerAction::Call);
 
+        let table_after_call = contract.get_table(table_id).unwrap();
+        let pot_after_call = table_after_call.pot;
+        let bob_balance_after_call = get_player_balance(&table_after_call, &bob);
+
+        set_context(bob.clone());
         contract.submit_action(table_id, PlayerAction::Check);
 
-        let table = contract.get_table(table_id).unwrap();
+        let table_after_check = contract.get_table(table_id).unwrap();
 
-        assert_eq!(table.pot, SMALL_BLIND + BIG_BLIND);
+        assert_eq!(table_after_check.pot, pot_after_call);
         assert_eq!(
-            get_player_balance(&table, &alice),
-            ONE_NEAR * 2 - SMALL_BLIND
-        );
-        assert_eq!(
-            get_player_balance(&table, &bob),
-            ONE_NEAR * 2 - BIG_BLIND
+            get_player_balance(&table_after_check, &bob),
+            bob_balance_after_call
         );
     }
 
@@ -3689,5 +3903,82 @@ mod tests {
             table.round_result.unwrap().winner_id,
             "split-pot.testnet".parse::<AccountId>().unwrap()
         );
+    }
+
+    #[test]
+    #[should_panic(expected = "Cannot check while facing a bet")]
+    fn small_blind_cannot_check_preflop_while_facing_big_blind() {
+        let (mut contract, table_id, alice, _) = setup_active_table();
+
+        set_context(alice);
+
+        contract.submit_action(table_id, PlayerAction::Check);
+    }
+
+    #[test]
+    fn small_blind_call_adds_missing_amount_to_pot() {
+        let (mut contract, table_id, alice, _) = setup_active_table();
+
+        let before = contract.get_table(table_id).unwrap();
+        assert_eq!(before.pot, SMALL_BLIND + BIG_BLIND);
+
+        set_context(alice);
+        contract.submit_action(table_id, PlayerAction::Call);
+
+        let after = contract.get_table(table_id).unwrap();
+
+        assert_eq!(after.pot, BIG_BLIND + BIG_BLIND);
+    }
+
+    #[test]
+    fn big_blind_check_after_small_blind_call_advances_to_flop() {
+        let (mut contract, table_id, alice, bob) = setup_active_table();
+
+        set_context(alice);
+        contract.submit_action(table_id, PlayerAction::Call);
+
+        set_context(bob);
+        contract.submit_action(table_id, PlayerAction::Check);
+
+        let table = contract.get_table(table_id).unwrap();
+
+        assert_eq!(table.game_stage, GameStage::Flop);
+        assert_eq!(table.community_cards.len(), 3);
+        assert_eq!(table.remaining_deck_count, 45);
+        assert_eq!(table.current_bet, 0);
+    }
+
+    #[test]
+    fn call_uses_remaining_balance_if_less_than_required() {
+        let (mut contract, table_id, alice, bob) = setup_active_table();
+
+        {
+            let mut table = contract.tables.get(&table_id).unwrap().clone();
+
+            let bob_balance = table
+                .player_balances
+                .iter_mut()
+                .find(|balance| balance.player_id == bob)
+                .unwrap();
+
+            bob_balance.balance = ONE_NEAR / 20;
+
+            contract.tables.insert(table_id, table);
+        }
+
+        set_context(alice);
+        contract.submit_action(
+            table_id,
+            PlayerAction::Raise {
+                amount: U128(ONE_NEAR),
+            },
+        );
+
+        set_context(bob.clone());
+        contract.submit_action(table_id, PlayerAction::Call);
+
+        let table = contract.get_table(table_id).unwrap();
+
+        assert_eq!(get_player_balance(&table, &bob), 0);
     }
 }
