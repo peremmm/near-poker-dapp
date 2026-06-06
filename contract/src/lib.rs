@@ -30,6 +30,7 @@ trait ExtSelf {
 #[near(serializers = [borsh])]
 pub enum StorageKey {
     Tables,
+    TablesV2,
     PendingWithdrawals,
 }
 
@@ -267,6 +268,13 @@ impl Contract {
 
         self.min_buy_in = min_buy_in;
         self.max_buy_in = max_buy_in;
+    }
+
+    pub fn dev_reset_tables(&mut self) {
+        self.assert_owner();
+
+        self.tables = UnorderedMap::new(StorageKey::TablesV2);
+        self.next_table_id = 0;
     }
 
     pub fn pause(&mut self) {
