@@ -29,6 +29,26 @@
   gap: 16px;
 }
 
+.section-header h2 {
+  margin: 0;
+}
+
+.load-table-compact {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  flex: 1;
+}
+
+.load-table-compact button {
+  white-space: nowrap;
+}
+
+.signed-transactions-header {
+  margin-bottom: 20px;
+}
+
 .row {
   display: flex;
   gap: 12px;
@@ -163,6 +183,44 @@ select {
   margin-top: 18px;
 }
 
+.player-cards-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 18px;
+}
+
+.player-cards-grid.single-column {
+  grid-template-columns: 1fr;
+}
+
+.player-cards-grid .card-zone {
+  min-width: 0;
+  padding: 16px;
+  border: 1px solid #eee;
+  border-radius: 14px;
+  background: white;
+}
+
+.player-cards-grid .card-zone h4 {
+  margin-top: 0;
+}
+
+.revealed-cards-zone {
+  max-height: 360px;
+  overflow-y: auto;
+}
+
+.revealed-hand + .revealed-hand {
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid #eee;
+}
+
+.revealed-hand p {
+  margin: 0 0 10px;
+  overflow-wrap: anywhere;
+}
+
 .cards-row {
   display: flex;
   gap: 10px;
@@ -272,4 +330,16 @@ select {
 
 .form-card button:disabled {
   background: #888;
+}
+
+@media (max-width: 700px) {
+  .section-header,
+  .load-table-compact {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .player-cards-grid {
+    grid-template-columns: 1fr;
+  }
 }

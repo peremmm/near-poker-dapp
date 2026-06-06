@@ -745,40 +745,42 @@ function App() {
                     )}
                   </div>
 
-                  <div className="card-zone">
-                    <h4>My Cards</h4>
+                  <div className={`player-cards-grid${revealedCards ? "" : " single-column"}`}>
+                      <div className="card-zone">
+                        <h4>My Cards</h4>
 
-                    {accountId ? (
-                        getOwnCards().length > 0 ? (
-                            <div className="cards-row">
-                              {getOwnCards().map(renderCard)}
-                            </div>
+                        {accountId ? (
+                            getOwnCards().length > 0 ? (
+                                <div className="cards-row">
+                                  {getOwnCards().map(renderCard)}
+                                </div>
+                            ) : (
+                                <p>No cards found for your connected account.</p>
+                            )
                         ) : (
-                            <p>No cards found for your connected account.</p>
-                        )
-                    ) : (
-                        <p>Connect wallet to view your cards.</p>
+                            <p>Connect wallet to view your cards.</p>
+                        )}
+                      </div>
+
+                    {revealedCards && (
+                        <div className="card-zone revealed-cards-zone">
+                          <h4>Revealed Cards</h4>
+
+                          {revealedCards.map((hand) => (
+                              <div key={hand.player_id} className="revealed-hand">
+                                <p>
+                                  <strong>{hand.player_id}</strong>
+                                  {hand.player_id === accountId ? " (you)" : ""}
+                                </p>
+
+                                <div className="cards-row">
+                                  {hand.cards.map(renderCard)}
+                                </div>
+                              </div>
+                          ))}
+                        </div>
                     )}
                   </div>
-
-                  {revealedCards && (
-                      <div className="card-zone">
-                        <h4>Revealed Cards</h4>
-
-                        {revealedCards.map((hand) => (
-                            <div key={hand.player_id} className="revealed-hand">
-                              <p>
-                                <strong>{hand.player_id}</strong>
-                                {hand.player_id === accountId ? " (you)" : ""}
-                              </p>
-
-                              <div className="cards-row">
-                                {hand.cards.map(renderCard)}
-                              </div>
-                            </div>
-                        ))}
-                      </div>
-                  )}
 
                   <div className="players-box">
                     <h4>Players</h4>
@@ -863,8 +865,14 @@ function App() {
           )}
 
           <section>
-            <div className="section-header">
+            <div className="section-header signed-transactions-header">
               <h2>Signed Transactions</h2>
+
+              <div className="load-table-compact">
+                <button onClick={loadSelectedTable} disabled={isLoadingViews}>
+                  {isLoadingViews ? "Reloading..." : "Reload Table"}
+                </button>
+              </div>
             </div>
 
             {!accountId && (
