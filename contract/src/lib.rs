@@ -493,6 +493,8 @@ impl Contract {
             "Only the current player can act"
         );
 
+        let is_fold = matches!(action, PlayerAction::Fold);
+
         match &action {
             PlayerAction::Raise { amount } => {
                 let amount: Balance = amount.0;
@@ -517,13 +519,17 @@ impl Contract {
         }
 
         table.action_history.push(ActionRecord {
-            player_id: actor_id,
+            player_id: actor_id.clone(),
             action,
             timestamp: env::block_timestamp(),
         });
 
-        table.current_turn_index =
-            Some(((current_turn_index + 1) % table.players.len()) as u8);
+        if is_fold {
+            self.resolve_fold(&mut table, actor_id);
+        } else {
+            table.current_turn_index =
+                Some(((current_turn_index + 1) % table.players.len()) as u8);
+        }
 
         table.last_action_at = Some(env::block_timestamp());
 
@@ -632,6 +638,44 @@ impl Contract {
         });
 
         self.tables.insert(table_id, table);
+    }
+
+    fn resolve_fold(
+        &self,
+        table: &mut Table,
+        folding_player_id: AccountId,
+    ) {
+        assert_eq!(
+            table.players.len(),
+            2,
+            "Fold resolution currently supports 2 players only"
+        );
+
+        let winner_id = table
+            .players
+            .iter()
+            .find(|player_id| **player_id != folding_player_id)
+            .expect("Opponent should exist")
+            .clone();
+
+        let pot_awarded = table.pot;
+
+        let winner_balance = table
+            .player_balances
+            .iter_mut()
+            .find(|balance| balance.player_id == winner_id)
+            .expect("Winner balance does not exist");
+
+        winner_balance.balance += pot_awarded;
+
+        table.pot = 0;
+        table.status = TableStatus::Finished;
+        table.current_turn_index = None;
+        table.round_result = Some(RoundResult {
+            winner_id,
+            pot_awarded,
+            resolved_at: env::block_timestamp(),
+        });
     }
 
     pub fn withdraw(&mut self, table_id: u64) -> Promise {
@@ -2812,5 +2856,96 @@ mod tests {
         set_context(carol);
 
         contract.advance_stage(table_id);
+    }
+
+    #[test]
+    fn fold_finishes_table() {
+        let (mut contract, table_id, alice, _) = setup_active_table();
+
+        set_context(alice);
+
+        contract.submit_action(table_id, PlayerAction::Fold);
+
+        let table = contract.get_table(table_id).unwrap();
+
+        assert_eq!(table.status, TableStatus::Finished);
+        assert_eq!(table.current_turn_index, None);
+    }
+
+    #[test]
+    fn fold_awards_pot_to_opponent() {
+        let (mut contract, table_id, alice, bob) = setup_active_table();
+
+        set_context(alice);
+
+        contract.submit_action(table_id, PlayerAction::Fold);
+
+        let table = contract.get_table(table_id).unwrap();
+
+        assert_eq!(
+            get_player_balance(&table, &bob),
+            ONE_NEAR * 2 - BIG_BLIND + SMALL_BLIND + BIG_BLIND
+        );
+    }
+
+    #[test]
+    fn fold_resets_pot() {
+        let (mut contract, table_id, alice, _) = setup_active_table();
+
+        set_context(alice);
+
+        contract.submit_action(table_id, PlayerAction::Fold);
+
+        let table = contract.get_table(table_id).unwrap();
+
+        assert_eq!(table.pot, 0);
+    }
+
+    #[test]
+    fn fold_records_round_result() {
+        let (mut contract, table_id, alice, bob) = setup_active_table();
+
+        set_context(alice);
+
+        contract.submit_action(table_id, PlayerAction::Fold);
+
+        let table = contract.get_table(table_id).unwrap();
+        let result = table.round_result.expect("Round result should exist");
+
+        assert_eq!(result.winner_id, bob);
+        assert_eq!(result.pot_awarded, SMALL_BLIND + BIG_BLIND);
+    }
+
+    #[test]
+    #[should_panic(expected = "Only the current player can act")]
+    fn wrong_player_cannot_fold() {
+        let (mut contract, table_id, _, bob) = setup_active_table();
+
+        set_context(bob);
+
+        contract.submit_action(table_id, PlayerAction::Fold);
+    }
+
+    #[test]
+    #[should_panic(expected = "Table is not active")]
+    fn cannot_fold_on_waiting_table() {
+        let owner = account("owner.testnet");
+        let alice = account("alice.testnet");
+
+        set_context(owner.clone());
+
+        let mut contract = Contract::new(
+            owner,
+            U128(ONE_NEAR),
+            U128(ONE_NEAR * 10),
+        );
+
+        set_context_with_deposit(alice.clone(), ONE_NEAR * 3);
+
+        let table_id = contract.create_table(U128(ONE_NEAR * 2));
+
+        set_context(alice);
+
+        contract.submit_action(table_id, PlayerAction::Fold);
     }
 }
