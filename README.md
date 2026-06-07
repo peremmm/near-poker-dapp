@@ -247,6 +247,7 @@ contract/target/near/contract.wasm
 ```
 
 ## Deploy Contract
+"Contract has been deployed under epe78.testnet and can skip instructions further if you want to skip deployment."
 
 Set your admin/contract account:
 
